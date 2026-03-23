@@ -1,0 +1,271 @@
+import type {
+  CanonicalRequest,
+  CanonicalResponse,
+  CanonicalResponseOutput,
+} from '@/models/canonical/response';
+import type { OpenAIResponse } from '@/models/openai/responses';
+import { createMessageId } from '@/utils/ids';
+import { toJsonString } from '@/utils/json';
+
+const toUsage = (response: CanonicalResponse) => {
+  if (!response.usage) {
+    return null;
+  }
+
+  return {
+    input_tokens: response.usage.inputTokens ?? 0,
+    input_tokens_details: {
+      cached_tokens: 0,
+    },
+    output_tokens: response.usage.outputTokens ?? 0,
+    output_tokens_details: {
+      reasoning_tokens: response.usage.reasoningTokens ?? 0,
+    },
+    total_tokens:
+      response.usage.totalTokens ??
+      (response.usage.inputTokens ?? 0) + (response.usage.outputTokens ?? 0),
+  };
+};
+
+const toMessageOutputItem = (
+  output: Extract<CanonicalResponseOutput, { kind: 'message' }>,
+) => ({
+  id: output.id,
+  type: 'message',
+  status: output.status,
+  role: output.role,
+  content: output.content.flatMap((part: (typeof output.content)[number]) => {
+    if (part.type === 'text') {
+      return [
+        {
+          type: 'output_text',
+          text: part.text,
+          annotations: [],
+        },
+      ];
+    }
+
+    if (part.type === 'reasoning') {
+      return [];
+    }
+
+    return [
+      {
+        type: 'output_text',
+        text: `[non-text-content:${part.type}]`,
+        annotations: [],
+      },
+    ];
+  }),
+});
+
+const toToolCallOutputItem = (
+  output: Extract<CanonicalResponseOutput, { kind: 'tool_call' }>,
+) => {
+  const toolCall = output.toolCall;
+
+  if (toolCall.type === 'function') {
+    return {
+      id: output.id,
+      type: 'function_call',
+      call_id: toolCall.callId,
+      name: toolCall.name,
+      arguments:
+        toolCall.rawArguments ?? toJsonString(toolCall.arguments, '{}'),
+      status: output.status,
+    };
+  }
+
+  if (toolCall.type === 'custom') {
+    return {
+      id: output.id,
+      type: 'custom_tool_call',
+      call_id: toolCall.callId,
+      name: toolCall.name,
+      input:
+        typeof toolCall.rawArguments === 'string'
+          ? toolCall.rawArguments
+          : typeof toolCall.arguments === 'string'
+            ? toolCall.arguments
+            : toJsonString(toolCall.arguments, ''),
+      status: output.status,
+    };
+  }
+
+  if (toolCall.type === 'mcp') {
+    return {
+      id: output.id,
+      type: 'mcp_call',
+      call_id: toolCall.callId,
+      name: toolCall.name,
+      arguments: toolCall.arguments ?? null,
+      status: output.status,
+    };
+  }
+
+  const itemType = toolCall.originalType?.endsWith('_call')
+    ? toolCall.originalType
+    : `${toolCall.originalType ?? toolCall.name}_call`;
+
+  return {
+    id: output.id,
+    type: itemType,
+    call_id: toolCall.callId,
+    name: toolCall.name,
+    arguments: toolCall.arguments ?? null,
+    status: output.status,
+  };
+};
+
+const toReasoningOutputItem = (
+  output: Extract<CanonicalResponseOutput, { kind: 'reasoning' }>,
+) => ({
+  id: output.id,
+  type: 'reasoning',
+  status: output.status,
+  summary: [
+    {
+      type: 'summary_text',
+      text: output.text,
+    },
+  ],
+  encrypted_content: output.encryptedContent ?? null,
+});
+
+const toOutputItem = (output: CanonicalResponseOutput) => {
+  if (output.kind === 'message') {
+    return toMessageOutputItem(output);
+  }
+
+  if (output.kind === 'tool_call') {
+    return toToolCallOutputItem(output);
+  }
+
+  return toReasoningOutputItem(output);
+};
+
+export const createInProgressOpenAIResponse = (
+  request: CanonicalRequest,
+): OpenAIResponse => ({
+  id: request.id,
+  object: 'response',
+  created_at: Math.floor(Date.now() / 1000),
+  status: 'in_progress',
+  background: request.background,
+  error: null,
+  incomplete_details: null,
+  instructions: request.instructions ?? null,
+  max_output_tokens: request.maxOutputTokens ?? null,
+  max_tool_calls: request.maxToolCalls ?? null,
+  model: request.model,
+  output: [],
+  parallel_tool_calls: request.parallelToolCalls,
+  previous_response_id: request.previousResponseId ?? null,
+  reasoning: {
+    effort: request.reasoning?.effort ?? null,
+    summary: request.reasoning?.summary ?? null,
+  },
+  service_tier: request.serviceTier,
+  store: request.store,
+  temperature: request.temperature ?? null,
+  text: request.text ?? {
+    format: {
+      type: 'text',
+    },
+  },
+  tool_choice:
+    request.toolChoice ?? (request.tools.length > 0 ? 'auto' : 'none'),
+  tools: request.tools.map((tool) => tool.raw),
+  top_p: request.topP ?? null,
+  truncation: request.truncation,
+  usage: null,
+  user: null,
+  metadata: request.metadata,
+});
+
+export const toOpenAIResponse = (
+  request: CanonicalRequest,
+  response: CanonicalResponse,
+): OpenAIResponse => ({
+  id: response.id,
+  object: 'response',
+  created_at: response.createdAt,
+  completed_at: response.completedAt,
+  status: response.status,
+  background: response.background ?? request.background,
+  error: response.error ?? null,
+  incomplete_details: response.incompleteDetails ?? null,
+  instructions: response.instructions ?? request.instructions ?? null,
+  max_output_tokens:
+    response.maxOutputTokens ?? request.maxOutputTokens ?? null,
+  max_tool_calls: response.maxToolCalls ?? request.maxToolCalls ?? null,
+  model: response.model,
+  output: response.output.map((output: CanonicalResponseOutput) =>
+    toOutputItem(output),
+  ),
+  parallel_tool_calls: response.parallelToolCalls,
+  previous_response_id:
+    response.previousResponseId ?? request.previousResponseId ?? null,
+  reasoning: {
+    effort: response.reasoning?.effort ?? request.reasoning?.effort ?? null,
+    summary: response.reasoning?.summary ?? request.reasoning?.summary ?? null,
+  },
+  service_tier: response.serviceTier ?? request.serviceTier,
+  store: response.store ?? request.store,
+  temperature: response.temperature ?? request.temperature ?? null,
+  text: request.text ?? {
+    format: {
+      type: 'text',
+    },
+  },
+  tool_choice:
+    response.toolChoice ??
+    request.toolChoice ??
+    (request.tools.length > 0 ? 'auto' : 'none'),
+  tools:
+    response.tools.length > 0
+      ? response.tools.map((tool) => tool.raw)
+      : request.tools.map((tool) => tool.raw),
+  top_p: response.topP ?? request.topP ?? null,
+  truncation: response.truncation,
+  usage: toUsage(response),
+  user: response.user ?? null,
+  metadata: response.metadata,
+});
+
+export const getAssistantTextFromResponse = (response: OpenAIResponse) => {
+  const messageItem = response.output.find(
+    (item: Record<string, unknown>) => item.type === 'message',
+  );
+
+  if (!messageItem || !Array.isArray(messageItem.content)) {
+    return '';
+  }
+
+  return messageItem.content
+    .filter(
+      (
+        contentItem: Record<string, unknown>,
+      ): contentItem is { type: 'output_text'; text: string } =>
+        contentItem.type === 'output_text' &&
+        typeof contentItem.text === 'string',
+    )
+    .map(
+      (contentItem: { type: 'output_text'; text: string }) => contentItem.text,
+    )
+    .join('');
+};
+
+export const createSyntheticAssistantMessageOutput = (text: string) => ({
+  id: createMessageId(),
+  type: 'message',
+  status: 'completed',
+  role: 'assistant',
+  content: [
+    {
+      type: 'output_text',
+      text,
+      annotations: [],
+    },
+  ],
+});
