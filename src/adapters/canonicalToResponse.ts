@@ -77,6 +77,9 @@ const toToolCallOutputItem = (
   }
 
   if (toolCall.type === 'custom') {
+    // arguments は custom ツールの場合、素のテキスト(apply_patch なら "*** Begin Patch ...")を保持している前提。
+    // 万が一オブジェクト化されていたら toJSONString 化せずテキスト成分のみを取り出す。
+    const argsIsString = typeof toolCall.arguments === 'string';
     return {
       id: output.id,
       type: 'custom_tool_call',
@@ -85,9 +88,9 @@ const toToolCallOutputItem = (
       input:
         typeof toolCall.rawArguments === 'string'
           ? toolCall.rawArguments
-          : typeof toolCall.arguments === 'string'
-            ? toolCall.arguments
-            : toJsonString(toolCall.arguments, ''),
+          : argsIsString
+            ? (toolCall.arguments as string)
+            : toJsonString(toolCall.arguments ?? '', ''),
       status: output.status,
     };
   }
@@ -269,3 +272,4 @@ export const createSyntheticAssistantMessageOutput = (text: string) => ({
     },
   ],
 });
+

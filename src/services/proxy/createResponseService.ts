@@ -191,7 +191,9 @@ export const createResponse = async (
             signal: abortController.signal,
           },
           {
-            disableToolLoop: false,
+            // Responses API clients drive their own external tool execution loop.
+            // サーバ側での偽結果合成ループは Codex 等では有害なため無効化する
+            disableToolLoop: true,
           },
         );
         const finalResponse = toOpenAIResponse(
@@ -221,7 +223,8 @@ export const createResponse = async (
       config,
     },
     {
-      disableToolLoop: false,
+      // 同上。Responses API clients drive their own external tool execution loop.
+      disableToolLoop: true,
     },
   );
   const finalResponse = toOpenAIResponse(canonicalRequest, canonicalResponse);
@@ -376,17 +379,38 @@ export const createStreamingResponse = async (
 
         controller.close();
       } catch (error) {
+        // クライアント切断等で abortController.abort() 後の AbortError は正常系。
+        // 失敗レスポンスを送ろうとしても controller は既に閉じている可能性が高く、
+        // 強引に送ると再例外でプロセス全体を巻き込むため、AbortError 時は黙って終える
+        const isAborted =
+          abortController.signal.aborted ||
+          (error instanceof Error && error.name === 'AbortError');
+
+        if (isAborted) {
+          responseStore.cancel(canonicalRequest.id);
+          try {
+            controller.close();
+          } catch {
+            // 既に close 済みの場合は無視する
+          }
+          return;
+        }
+
         const failedResponse = buildFailedResponse(inProgressResponse, error);
         responseStore.updateResponse(canonicalRequest.id, failedResponse);
-        controller.enqueue(
-          encoder.encode(
-            sseEncode('response.failed', {
-              type: 'response.failed',
-              response: failedResponse,
-            }),
-          ),
-        );
-        controller.close();
+        try {
+          controller.enqueue(
+            encoder.encode(
+              sseEncode('response.failed', {
+                type: 'response.failed',
+                response: failedResponse,
+              }),
+            ),
+          );
+          controller.close();
+        } catch {
+          // クライアント切断で controller が無効化されている場合は無視する
+        }
       }
     },
     cancel() {
@@ -420,3 +444,4 @@ export const getResponseInputItems = async (responseId: string) => {
     has_more: false,
   };
 };
+

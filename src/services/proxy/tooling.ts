@@ -52,23 +52,45 @@ const findToolByName = (tools: CanonicalTool[], name: string) => {
   );
 };
 
-const parseTaggedToolCalls = (content: string): ParsedToolCall[] =>
+const parseTaggedToolCalls = (
+  content: string,
+  tools: CanonicalTool[],
+): ParsedToolCall[] =>
   extractTagContents(content, TOOL_TAG_PATTERN).map((chunk) => {
     const rawArguments = chunk.trim();
     const parsed = safeJsonParse<Record<string, unknown>>(rawArguments) ?? {};
+    const name = typeof parsed.name === 'string' ? parsed.name : 'unknown_tool';
+
+    // Custom(Freeform)ツール(apply_patch 等)は {"input":"<raw text>"} 形式で来る。
+    // arguments/rawArguments 双方へ素テキスト(input 値)を格納しないと
+    // downstream の Codex apply_patch 検証が "*** Begin Patch" を先頭認識できず失敗する
+    const tool = findToolByName(tools, name);
+    if (tool?.type === 'custom') {
+      const inputValue =
+        parsed && typeof parsed === 'object' && 'input' in parsed
+          ? (parsed as { input?: unknown }).input
+          : undefined;
+      const extracted =
+        typeof inputValue === 'string' ? inputValue : rawArguments;
+      return {
+        name,
+        arguments: extracted,
+        rawArguments: extracted,
+      };
+    }
 
     return {
-      name: typeof parsed.name === 'string' ? parsed.name : 'unknown_tool',
+      name,
       arguments:
         parsed && typeof parsed === 'object' && 'arguments' in parsed
-          ? parsed.arguments
+          ? (parsed as { arguments: unknown }).arguments
           : {},
       rawArguments,
     };
   });
 
 const parseAssistantPayload = (content: string, tools: CanonicalTool[]) => {
-  const parsedToolCalls = parseTaggedToolCalls(content);
+  const parsedToolCalls = parseTaggedToolCalls(content, tools);
   const reasoningText = extractTagContents(content, THINK_TAG_PATTERN)
     .join('\n\n')
     .trim();
@@ -282,3 +304,5 @@ export const executeToolLoop = async ({
     );
   }
 };
+
+

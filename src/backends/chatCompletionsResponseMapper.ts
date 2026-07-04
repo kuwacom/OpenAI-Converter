@@ -24,6 +24,24 @@ const getToolByName = (
 ): CanonicalTool | undefined =>
   tools.find((tool) => tool.wireName === name || tool.name === name);
 
+// Custom(Freeform)ツールは単一文字列 input を受け取る設計。
+// 上流 wrapper は {"input":"<raw text>"} 形式で返すため、JSON 化せず "input" 値を素通しする。
+// これにより apply_patch 等 "*** Begin Patch ..." を持つテキストが JSON ラップされたまま
+// downstream(Codex 等)へ届くことで検証エラーになる問題を防ぐ
+const extractCustomToolInput = (rawArguments: string): string => {
+  const parsed = safeJsonParse<{ input?: unknown }>(rawArguments);
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    'input' in parsed &&
+    typeof parsed.input === 'string'
+  ) {
+    return parsed.input;
+  }
+  // 万一 {"input": ...} 形状でない場合は原文を保持して情報落ちを防ぐ
+  return rawArguments;
+};
+
 // 上流から構造化されたツール呼び出しを受け取った場合の正規化。
 // function / custom / mcp / builtin 種別は wireName lookup 結果に従うことで、
 // request-mapper のラッパー化された工具種別も元の形へ復元できる
@@ -46,6 +64,10 @@ const normalizeStructuredToolCall = (
         ? (rawToolCall.arguments as string)
         : undefined;
 
+  // Custom(Freeform)ツールでは {"input":"..."} 形式の JSON 文字列をそのまま保持すると
+  // downstream の Codex apply_patch 検証が通らない。元テキスト(input 値)を取り出して格納する
+  const isCustomTool = tool?.type === 'custom';
+
   return {
     kind: 'tool_call',
     id: createFunctionCallId(),
@@ -58,9 +80,15 @@ const normalizeStructuredToolCall = (
       name: tool?.name ?? candidateName,
       wireName: tool?.wireName ?? candidateName,
       arguments: rawArguments
-        ? (safeJsonParse(rawArguments) ?? rawArguments)
+        ? isCustomTool
+          ? extractCustomToolInput(rawArguments)
+          : (safeJsonParse(rawArguments) ?? rawArguments)
         : undefined,
-      rawArguments,
+      // custom の場合、生引数(JSON文字列)ではなく抽出した input 本体を rawArguments へ格納し直す。
+      // 出力変換(canonicalToResponse)で input フィールドを再構築する際に破綻しないようにするため
+      rawArguments: isCustomTool && rawArguments
+        ? extractCustomToolInput(rawArguments)
+        : rawArguments,
       originalType: tool?.originalType ?? 'function_call',
       status: 'completed',
       raw: rawToolCall,
@@ -199,3 +227,5 @@ export const mapChatCompletionToCanonicalResponse = (
     raw: { chatCompletion: response, backendResponseId: response.id },
   };
 };
+
+

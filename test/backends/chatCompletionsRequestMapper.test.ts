@@ -153,4 +153,72 @@ describe('chat-completions request mapper', () => {
   it('exposes helper exports without throwing on empty tools', () => {
     expect(buildChatCompletionTools([])).toEqual([]);
   });
+
+  // 直前ターンの assistant 产出(message + custom_tool_call)を Codex が別々の input item として
+  // 返送してくるケース。元実装では2つの連続した assistant メッセージに分解され、strict な上流 API が
+  // 連続 assistant を拒否して 400 になる重大バグの回帰テスト
+  it('merges consecutive assistant messages coming from split prior-turn outputs', () => {
+    // 複数行パッチをソース中にリテラルで書くとエスケープ問題を起こすため join で組み立てる
+    const patchBody = ['*** Begin Patch', '+hello world', '*** End Patch'].join(
+      '\n',
+    );
+    const request = CreateResponseRequestSchema.parse({
+      model: 'gpt-4o-mini',
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: 'fix it' }] },
+        {
+          id: 'msg_1',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'Patching now.' }],
+        },
+        {
+          id: 'ctc_1',
+          type: 'custom_tool_call',
+          call_id: 'call_ap_1',
+          name: 'apply_patch',
+          input: patchBody,
+          status: 'completed',
+        },
+        {
+          type: 'custom_tool_call_output',
+          call_id: 'call_ap_1',
+          output: 'patch applied successfully',
+        },
+      ],
+      tools: [{ type: 'custom', name: 'apply_patch' }],
+    });
+
+    const canonical = toCanonicalRequest(request);
+    const mapped = mapToChatCompletions(canonical);
+    const roles = mapped.request.messages.map((m) => m.role);
+
+    // 統合前だと ['user','assistant','assistant','tool'] となる。
+    // 上流 CC strict プロバイダは連続 assistant を拒否するため1つへ統合されなければならない
+    expect(roles).toEqual(['user', 'assistant', 'tool']);
+
+    const mergedAssistant = mapped.request.messages.find(
+      (m) => m.role === 'assistant',
+    )!;
+    expect(mergedAssistant.content).toBe('Patching now.');
+    expect(Array.isArray(mergedAssistant.tool_calls)).toBe(true);
+    const call0 = mergedAssistant.tool_calls?.[0];
+    expect(call0).toMatchObject({
+      id: 'call_ap_1',
+      type: 'function',
+      function: { name: 'apply_patch' },
+    });
+    // 上流 wrapper 向けに {"input":"<patch text>"} 形式の JSON 文字列化されていること
+    const fnArgs = (call0 as { function?: { arguments?: unknown } } | undefined)?.function?.arguments;
+    expect(typeof fnArgs === 'string').toBe(true);
+    if (typeof fnArgs === 'string') {
+      const parsed = JSON.parse(fnArgs);
+      expect(parsed).toEqual({ input: patchBody });
+    }
+
+    const toolMessage = mapped.request.messages.find((m) => m.role === 'tool')!;
+    expect(toolMessage.tool_call_id).toBe('call_ap_1');
+    expect(toolMessage.content).toBe('patch applied successfully');
+  });
 });

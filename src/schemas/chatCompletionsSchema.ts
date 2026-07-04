@@ -18,6 +18,24 @@ export const ChatCompletionMessageSchema = z
   })
   .passthrough();
 
+// SSE ストリーミングチャンクの差分(delta)向け緩いスキーマ。
+// OpenAI 仕様上、先頭チャンクでのみ role:"assistant" が入り、以降は content/tool_calls 等が断片的に届く。
+// 完全メッセージと同じくすべて passthrough にし、未知拡張フィールドも取りこぼさない
+export const ChatCompletionDeltaSchema = z
+  .object({
+    role: z.string().optional(),
+    content: z
+      .union([z.string(), z.array(z.record(z.string(), z.unknown()))])
+      .nullable()
+      .optional(),
+    reasoning_content: z.string().optional().nullable(),
+    reasoning: z.unknown().optional().nullable(),
+    name: z.string().optional(),
+    tool_call_id: z.string().optional(),
+    tool_calls: z.array(z.record(z.string(), z.unknown())).optional(),
+  })
+  .passthrough();
+
 export const ChatCompletionRequestSchema = z
   .object({
     model: z.string().optional(),
@@ -41,10 +59,10 @@ export const ChatCompletionRequestSchema = z
 
 export const ChatCompletionChoiceSchema = z
   .object({
-    index: z.number().int(),
+    index: z.number().int().optional(),
     finish_reason: z.string().nullable().optional(),
     message: ChatCompletionMessageSchema.optional(),
-    delta: ChatCompletionMessageSchema.optional(),
+    delta: ChatCompletionDeltaSchema.optional(),
   })
   .passthrough();
 
@@ -54,7 +72,8 @@ export const ChatCompletionResponseSchema = z
     object: z.string().optional(),
     created: z.number().int().optional(),
     model: z.string().optional(),
-    choices: z.array(ChatCompletionChoiceSchema),
+    // usage 単独チャンクなど choices が空配列で来るケースも透過させる
+    choices: z.array(ChatCompletionChoiceSchema).default([]),
     usage: z
       .object({
         prompt_tokens: z.number().int().optional(),
