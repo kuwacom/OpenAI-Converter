@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/services/proxy/create-response.service', () => ({
+vi.mock('@/services/proxy/createResponseService', () => ({
   createResponse: vi.fn(),
   createStreamingResponse: vi.fn(),
   getResponse: vi.fn(),
@@ -12,7 +12,7 @@ import { createApp } from '@/app';
 import {
   createResponse,
   createStreamingResponse,
-} from '@/services/proxy/create-response.service';
+} from '@/services/proxy/createResponseService';
 import { ResponseSchema } from '@/schemas/responsesSchema';
 
 const baseResponse = ResponseSchema.parse({

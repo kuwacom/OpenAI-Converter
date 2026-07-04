@@ -6,7 +6,7 @@ import type { CreateResponseRequest } from '@/models/responsesModel';
 import {
   createResponse,
   createStreamingResponse,
-} from '@/services/proxy/create-response.service';
+} from '@/services/proxy/createResponseService';
 import type { AppEnv } from '@/types/env';
 
 /**

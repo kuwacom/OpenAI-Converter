@@ -11,7 +11,7 @@ import {
   toOpenAIResponse,
 } from '@/adapters/canonicalToResponse';
 import { resolveBackend } from '@/services/backends/resolveBackend';
-import { responseStore } from '@/services/proxy/response-store.service';
+import { responseStore } from '@/services/proxy/responseStoreService';
 import { createMessageId } from '@/utils/ids';
 
 const extractCurrentInputItems = (request: CreateResponseRequest) => {

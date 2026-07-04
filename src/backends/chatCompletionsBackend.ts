@@ -14,7 +14,7 @@ import {
   executeToolLoop,
   synthesizeCanonicalResponseOutputs,
 } from '@/services/proxy/tooling';
-import { needsUpstreamContinuation } from '@/services/proxy/upstreamContinuation.service';
+import { needsUpstreamContinuation } from '@/services/proxy/upstreamContinuationService';
 
 // ストリーミング時、delta.tool_calls の部分 JSON を index 単位で結合するための可変ラッパー。
 // 終端で assistantMessage.tool_calls へ詰め直して response-mapper へ渡す

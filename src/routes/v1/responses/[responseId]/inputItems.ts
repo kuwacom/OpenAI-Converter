@@ -1,7 +1,7 @@
 import type { Context } from 'hono';
 import { apiError, ErrorCode } from '@/lib/apiError';
 import { ResponseIdParamsSchema } from '@/schemas/responsesSchema';
-import { getResponseInputItems } from '@/services/proxy/create-response.service';
+import { getResponseInputItems } from '@/services/proxy/createResponseService';
 import type { AppEnv } from '@/types/env';
 
 /**
