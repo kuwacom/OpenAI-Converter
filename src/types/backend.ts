@@ -14,6 +14,10 @@ export type BackendStreamDelta = {
   rawChunk?: unknown;
 };
 
+export type BackendExecuteOptions = {
+  disableToolLoop?: boolean;
+};
+
 export type BackendStreamResult = {
   deltas: AsyncIterable<BackendStreamDelta>;
   finalResponse: Promise<CanonicalResponse>;
@@ -27,6 +31,7 @@ export interface BackendAdapter {
   execute(
     request: CanonicalRequest,
     context: BackendExecutionContext,
+    options?: BackendExecuteOptions,
   ): Promise<CanonicalResponse>;
   stream?(
     request: CanonicalRequest,

@@ -97,6 +97,27 @@ export const ResponseFunctionCallSchema = z
   })
   .passthrough();
 
+export const ResponseCustomToolCallSchema = z
+  .object({
+    id: z.string(),
+    type: z.literal('custom_tool_call'),
+    call_id: z.string(),
+    name: z.string(),
+    input: z.string(),
+    status: z.string(),
+  })
+  .passthrough();
+
+export const ResponseReasoningOutputItemSchema = z
+  .object({
+    id: z.string(),
+    type: z.literal('reasoning'),
+    status: z.string(),
+    summary: z.array(LooseObjectSchema).default([]),
+    encrypted_content: z.string().nullable().optional(),
+  })
+  .passthrough();
+
 export const ResponseGenericOutputItemSchema = z
   .object({
     id: z.string().optional(),
@@ -122,6 +143,8 @@ export const ResponseSchema = z
       z.union([
         ResponseMessageSchema,
         ResponseFunctionCallSchema,
+        ResponseCustomToolCallSchema,
+        ResponseReasoningOutputItemSchema,
         ResponseGenericOutputItemSchema,
       ]),
     ),
@@ -147,3 +170,11 @@ export const ResponseStreamEventSchema = z
     type: z.string(),
   })
   .passthrough();
+
+// /v1/responses/:responseId の route パラメータをバリデーションする
+// :responseId はルート定義上必ず存在するが、safeParse で空文字列や欠損を弾く
+export const ResponseIdParamsSchema = z.object({
+  responseId: z.string().min(1),
+});
+
+export type ResponseIdParams = z.infer<typeof ResponseIdParamsSchema>;

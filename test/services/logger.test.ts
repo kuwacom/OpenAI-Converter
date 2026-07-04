@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/configs/env', () => ({
   getAppConfig: () => ({
-    appName: 'OpenAI-Converter',
     port: 3000,
     llamaCppBaseUrl: 'http://127.0.0.1:8080',
     llamaCppModel: 'qwen3.5',

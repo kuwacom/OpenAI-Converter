@@ -1,0 +1,10 @@
+name = "openai-converter"
+main = "src/worker.ts"
+compatibility_date = "2026-03-22"
+
+[vars]
+CORS_ORIGIN = "*"
+DEFAULT_BACKEND = "llamacpp-qwen-chatml"
+LLAMACPP_BASE_URL = "http://127.0.0.1:8080"
+LLAMACPP_MODEL = "qwen3.5"
+LOG_LEVEL = "info"

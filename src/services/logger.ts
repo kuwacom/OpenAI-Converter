@@ -1,5 +1,6 @@
 import { Logger } from 'tslog';
 import { getAppConfig } from '@/configs/env';
+import { APP_NAME } from '@/configs/config';
 
 const inspectCustomSymbol = Symbol.for('nodejs.util.inspect.custom');
 
@@ -113,10 +114,12 @@ const createSafeLoggerFacade = (instance: Logger<unknown>) => ({
       : instance.fatal(message, normalizeForLogging(details)),
 });
 
-const { appName, logLevel } = getAppConfig();
+// appName は env 不要の固定値のため configs/config.ts を参照する
+// logLevel のみ env 経由(getAppConfig)で解決する
+const { logLevel } = getAppConfig();
 
 const rootLogger = new Logger({
-  name: appName,
+  name: APP_NAME,
   type: 'pretty',
   minLevel: resolveMinLevel(logLevel),
   prettyLogTimeZone: 'local',

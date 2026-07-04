@@ -1,37 +1,30 @@
-import type { MiddlewareHandler } from 'hono';
+import { createMiddleware } from 'hono/factory';
 import { httpLogger } from '@/services/logger';
+import type { AppEnv } from '@/types/env';
 
-export const loggerMiddleware: MiddlewareHandler = async (c, next) => {
+export const loggerMiddleware = createMiddleware<AppEnv>(async (c, next) => {
   const startedAt = Date.now();
-  const requestDetails = {
-    method: c.req.method,
-    path: c.req.path,
-    query: c.req.query(),
-  };
-
-  httpLogger.info('Request received', requestDetails);
-  httpLogger.debug('Request details', {
-    ...requestDetails,
-    headers: Object.fromEntries(c.req.raw.headers.entries()),
-  });
 
   await next();
 
-  const completionDetails = {
-    ...requestDetails,
-    durationMs: Date.now() - startedAt,
-    status: c.res.status,
+  const durationMs = Date.now() - startedAt;
+  const status = c.res.status;
+  const logPayload = {
+    status,
+    durationMs,
+    path: c.req.path,
+    userAgent: c.req.header('user-agent') ?? 'unknown',
   };
 
-  if (c.res.status >= 500) {
-    httpLogger.error('Request completed', completionDetails);
+  if (status >= 500) {
+    httpLogger.error(`${c.req.method} ${c.req.path}`, logPayload);
     return;
   }
 
-  if (c.res.status >= 400) {
-    httpLogger.warn('Request completed', completionDetails);
+  if (status >= 400) {
+    httpLogger.warn(`${c.req.method} ${c.req.path}`, logPayload);
     return;
   }
 
-  httpLogger.info('Request completed', completionDetails);
-};
+  httpLogger.info(`${c.req.method} ${c.req.path}`, logPayload);
+});

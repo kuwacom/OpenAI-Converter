@@ -1,13 +1,9 @@
 import { Hono } from 'hono';
-import { getAppConfig } from '@/configs/env';
+import { get } from './get';
+import type { AppEnv } from '@/types/env';
 
-const healthRouter = new Hono();
+const healthRouter = new Hono<AppEnv>();
 
-healthRouter.get('/', (c) =>
-  c.json({
-    status: 'ok',
-    backend: getAppConfig().defaultBackend,
-  }),
-);
+healthRouter.get('/', get);
 
 export default healthRouter;

@@ -184,10 +184,16 @@ export const createResponse = async (
 
     void (async () => {
       try {
-        const canonicalResponse = await backend.execute(canonicalRequest, {
-          config,
-          signal: abortController.signal,
-        });
+        const canonicalResponse = await backend.execute(
+          canonicalRequest,
+          {
+            config,
+            signal: abortController.signal,
+          },
+          {
+            disableToolLoop: false,
+          },
+        );
         const finalResponse = toOpenAIResponse(
           canonicalRequest,
           canonicalResponse,
@@ -209,9 +215,15 @@ export const createResponse = async (
     return inProgressResponse;
   }
 
-  const canonicalResponse = await backend.execute(canonicalRequest, {
-    config,
-  });
+  const canonicalResponse = await backend.execute(
+    canonicalRequest,
+    {
+      config,
+    },
+    {
+      disableToolLoop: false,
+    },
+  );
   const finalResponse = toOpenAIResponse(canonicalRequest, canonicalResponse);
 
   responseStore.save({

@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import {
-  DEFAULT_APP_NAME,
   DEFAULT_BACKEND,
+  DEFAULT_CORS_ORIGIN,
+  DEFAULT_HOST,
   DEFAULT_LLAMACPP_BASE_URL,
   DEFAULT_LLAMACPP_MODEL,
   DEFAULT_LOG_LEVEL,
@@ -10,8 +11,9 @@ import {
 } from '@/configs/constants';
 
 export const EnvSchema = z.object({
-  APP_NAME: z.string().default(DEFAULT_APP_NAME),
+  HOST: z.string().default(DEFAULT_HOST),
   PORT: z.coerce.number().int().positive().default(DEFAULT_PORT),
+  CORS_ORIGIN: z.string().default(DEFAULT_CORS_ORIGIN),
   LLAMACPP_BASE_URL: z.string().url().default(DEFAULT_LLAMACPP_BASE_URL),
   LLAMACPP_MODEL: z.string().default(DEFAULT_LLAMACPP_MODEL),
   OPENAI_COMPATIBLE_BASE_URL: z.string().url().optional(),

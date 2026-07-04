@@ -1,16 +1,11 @@
 import { Hono } from 'hono';
-import {
-  cancelResponseHandler,
-  createResponseHandler,
-  getResponseHandler,
-  getResponseInputItemsHandler,
-} from '@/routes/v1/responses/responses.controller';
+import { post } from './post';
+import responseIdRouter from './[responseId]';
+import type { AppEnv } from '@/types/env';
 
-const responsesRouter = new Hono();
+const responsesRouter = new Hono<AppEnv>();
 
-responsesRouter.post('/', createResponseHandler);
-responsesRouter.get('/:responseId', getResponseHandler);
-responsesRouter.post('/:responseId/cancel', cancelResponseHandler);
-responsesRouter.get('/:responseId/input_items', getResponseInputItemsHandler);
+responsesRouter.post('/', post);
+responsesRouter.route('/:responseId', responseIdRouter);
 
 export default responsesRouter;

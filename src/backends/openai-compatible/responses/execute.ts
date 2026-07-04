@@ -8,6 +8,7 @@ import type { CanonicalRequest } from '@/models/canonical/response';
 import type { OpenAIResponse } from '@/models/openai/responses';
 import type { BackendAdapter, BackendStreamResult } from '@/types/backend';
 import { HttpError } from '@/types/errors';
+import { synthesizeCanonicalResponseOutputs } from '@/services/proxy/tooling';
 
 const toUpstreamRequest = (
   request: CanonicalRequest,
@@ -37,7 +38,10 @@ export const executeOpenAICompatibleResponses = async (
   });
   const parsedResponse = await parseResponse(upstreamResponse);
 
-  return toCanonicalResponse(request, parsedResponse);
+  return synthesizeCanonicalResponseOutputs(
+    toCanonicalResponse(request, parsedResponse),
+    request.tools,
+  );
 };
 
 export const streamOpenAICompatibleResponses = async (

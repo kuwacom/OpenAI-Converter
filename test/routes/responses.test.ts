@@ -52,6 +52,27 @@ const baseResponse = ResponseSchema.parse({
   metadata: {},
 });
 
+const responseWithToolItems = ResponseSchema.parse({
+  ...baseResponse,
+  output: [
+    {
+      id: 'rs_1',
+      type: 'reasoning',
+      status: 'completed',
+      summary: [{ type: 'summary_text', text: 'Need to call a tool first.' }],
+      encrypted_content: null,
+    },
+    {
+      id: 'fc_1',
+      type: 'function_call',
+      call_id: 'call_1',
+      name: 'lookup_info',
+      arguments: '{"topic":"mars"}',
+      status: 'completed',
+    },
+  ],
+});
+
 describe('responses routes', () => {
   const app = createApp();
   const mockedCreateResponse = vi.mocked(createResponse);
@@ -146,5 +167,48 @@ describe('responses routes', () => {
 
     const [payload] = firstCall;
     expect(payload.background).toBe(true);
+  });
+
+  it('returns reasoning and function call output items', async () => {
+    mockedCreateResponse.mockResolvedValue(responseWithToolItems);
+
+    const response = await app.request(
+      new Request('http://localhost/v1/responses', {
+        method: 'POST',
+        body: JSON.stringify({
+          model: 'qwen3.5',
+          input: 'Hello',
+          tools: [
+            {
+              type: 'function',
+              name: 'lookup_info',
+              description: 'Lookup information',
+              parameters: {
+                type: 'object',
+                properties: {
+                  topic: { type: 'string' },
+                },
+              },
+            },
+          ],
+        }),
+        headers: {
+          'content-type': 'application/json',
+        },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await response.json();
+    expect(payload.output).toHaveLength(2);
+    expect(payload.output[0]).toMatchObject({
+      type: 'reasoning',
+      status: 'completed',
+    });
+    expect(payload.output[1]).toMatchObject({
+      type: 'function_call',
+      name: 'lookup_info',
+      call_id: 'call_1',
+    });
   });
 });

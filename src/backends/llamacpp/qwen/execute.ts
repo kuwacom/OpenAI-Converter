@@ -12,6 +12,11 @@ import type { CanonicalRequest } from '@/models/canonical/response';
 import { asObject } from '@/utils/json';
 import { mapCanonicalRequestToLlamaCppQwenRequest } from '@/backends/llamacpp/qwen/request-mapper';
 import { mapLlamaCppChatCompletionToCanonicalResponse } from '@/backends/llamacpp/qwen/response-mapper';
+import {
+  executeToolLoop,
+  synthesizeCanonicalResponseOutputs,
+} from '@/services/proxy/tooling';
+import { needsUpstreamContinuation } from '@/services/proxy/upstream-continuation.service';
 
 type MutableStreamToolCall = Record<string, unknown> & {
   function: Record<string, unknown>;
@@ -130,23 +135,54 @@ const createEmptyAggregateResponse = (
 export const executeLlamaCppQwen = async (
   request: CanonicalRequest,
   context: { baseUrl: string; model: string; signal?: AbortSignal },
+  options?: { disableToolLoop?: boolean },
 ) => {
-  const mapping = mapCanonicalRequestToLlamaCppQwenRequest(
-    request,
-    context.model,
-  );
-  const rawResponse = await createChatCompletion({
-    baseUrl: context.baseUrl,
-    body: mapping.request,
-    signal: context.signal,
-  });
-  const parsedResponse = await parseChatCompletion(rawResponse);
+  const executeTurn = async (nextRequest: CanonicalRequest) => {
+    const mapping = mapCanonicalRequestToLlamaCppQwenRequest(
+      nextRequest,
+      context.model,
+    );
+    const rawResponse = await createChatCompletion({
+      baseUrl: context.baseUrl,
+      body: mapping.request,
+      signal: context.signal,
+    });
+    const parsedResponse = await parseChatCompletion(rawResponse);
+    const canonicalResponse = synthesizeCanonicalResponseOutputs(
+      mapLlamaCppChatCompletionToCanonicalResponse(
+        nextRequest,
+        mapping,
+        parsedResponse,
+      ),
+      nextRequest.tools,
+    );
 
-  return mapLlamaCppChatCompletionToCanonicalResponse(
+    if (
+      canonicalResponse.text &&
+      needsUpstreamContinuation(canonicalResponse.text)
+    ) {
+      return {
+        ...canonicalResponse,
+        incompleteDetails: {
+          reason: 'upstream_truncated',
+        },
+      };
+    }
+
+    return canonicalResponse;
+  };
+
+  const initialResponse = await executeTurn(request);
+
+  if (options?.disableToolLoop) {
+    return initialResponse;
+  }
+
+  return executeToolLoop({
     request,
-    mapping,
-    parsedResponse,
-  );
+    initialResponse,
+    executeTurn,
+  });
 };
 
 export const streamLlamaCppQwen = async (

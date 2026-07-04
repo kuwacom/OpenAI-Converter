@@ -1,27 +1,24 @@
+import 'dotenv/config';
 import { serve } from '@hono/node-server';
 import app from '@/app';
 import { getAppConfig } from '@/configs/env';
+import { APP_NAME } from '@/configs/config';
 import { serverLogger } from '@/services/logger';
 
-const config = getAppConfig();
-
-serverLogger.debug('Resolved app config', {
-  appName: config.appName,
-  port: config.port,
-  defaultBackend: config.defaultBackend,
-  logLevel: config.logLevel,
-  llamaCppBaseUrl: config.llamaCppBaseUrl,
-  llamaCppModel: config.llamaCppModel,
-  openAICompatibleBaseUrl: config.openAICompatibleBaseUrl,
-  openAICompatibleModel: config.openAICompatibleModel,
-});
+const { host, port, logLevel } = getAppConfig();
 
 serve(
   {
     fetch: app.fetch,
-    port: config.port,
+    hostname: host,
+    port,
   },
   (info) => {
-    serverLogger.info('Server started', info);
+    serverLogger.info('Server started', {
+      appName: APP_NAME,
+      url: `http://${host}:${info.port}`,
+      logLevel,
+      runtime: 'node',
+    });
   },
 );
