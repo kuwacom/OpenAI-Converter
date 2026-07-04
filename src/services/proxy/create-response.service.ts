@@ -2,15 +2,15 @@ import type { AppConfig } from '@/types/env';
 import type {
   CreateResponseRequest,
   OpenAIResponse,
-} from '@/models/openai/responses';
-import { toCanonicalRequest } from '@/adapters/openai-responses/request-to-canonical';
+} from '@/models/responsesModel';
+import { toCanonicalRequest } from '@/adapters/requestToCanonical';
 import {
   createInProgressOpenAIResponse,
   createSyntheticAssistantMessageOutput,
   getAssistantTextFromResponse,
   toOpenAIResponse,
-} from '@/adapters/openai-responses/canonical-to-response';
-import { resolveBackend } from '@/services/backends/resolve-backend';
+} from '@/adapters/canonicalToResponse';
+import { resolveBackend } from '@/services/backends/resolveBackend';
 import { responseStore } from '@/services/proxy/response-store.service';
 import { createMessageId } from '@/utils/ids';
 

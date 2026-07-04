@@ -1,6 +1,6 @@
 import type { Context } from 'hono';
 import { apiError, ErrorCode } from '@/lib/apiError';
-import { ResponseIdParamsSchema } from '@/schemas/openai/responses';
+import { ResponseIdParamsSchema } from '@/schemas/responsesSchema';
 import { getResponse } from '@/services/proxy/create-response.service';
 import type { AppEnv } from '@/types/env';
 

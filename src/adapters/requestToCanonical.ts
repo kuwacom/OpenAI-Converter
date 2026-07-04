@@ -5,8 +5,8 @@ import type {
   CanonicalToolCall,
 } from '@/models/canonical/message';
 import type { CanonicalTool } from '@/models/canonical/tool';
-import type { CreateResponseRequest } from '@/models/openai/responses';
-import { CanonicalRequestSchema } from '@/schemas/canonical/request';
+import type { CreateResponseRequest } from '@/models/responsesModel';
+import { CanonicalRequestSchema } from '@/schemas/requestSchema';
 import {
   createCallId,
   createFunctionCallId,

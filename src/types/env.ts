@@ -7,16 +7,15 @@ export type LogLevel =
   | 'error'
   | 'fatal';
 
-// Cloudflare Workers の bindings 形式
+// Cloudflare Workers の bindings 形式。
 // Node 実行では process.env を同一キーで扱うため、両環境で getAppConfig を共通化できる
 export type AppBindings = {
   HOST?: string;
   PORT?: string;
   CORS_ORIGIN?: string;
-  LLAMACPP_BASE_URL?: string;
-  LLAMACPP_MODEL?: string;
-  OPENAI_COMPATIBLE_BASE_URL?: string;
-  OPENAI_COMPATIBLE_MODEL?: string;
+  UPSTREAM_BASE_URL?: string;
+  UPSTREAM_MODEL?: string;
+  UPSTREAM_API_KEY?: string;
   DEFAULT_BACKEND?: string;
   LOG_LEVEL?: string;
 };
@@ -26,14 +25,15 @@ export type AppEnv = {
   Bindings: AppBindings;
 };
 
+// 全ての backend は単一の上流 OpenAI 互換エンドポイントへ向かう。
+// API キーはハードコードせず環境変数から注入する(AppConfig.upstreamApiKey)
 export type AppConfig = {
   host: string;
   port: number;
   corsOrigin: string;
-  llamaCppBaseUrl: string;
-  llamaCppModel: string;
-  openAICompatibleBaseUrl?: string;
-  openAICompatibleModel: string;
+  upstreamBaseUrl: string;
+  upstreamModel: string;
+  upstreamApiKey: string;
   defaultBackend: string;
   logLevel: LogLevel;
 };

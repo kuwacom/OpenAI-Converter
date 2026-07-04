@@ -3,7 +3,7 @@ import type {
   CreateResponseRequestSchema,
   ResponseSchema,
   ResponseStreamEventSchema,
-} from '@/schemas/openai/responses';
+} from '@/schemas/responsesSchema';
 
 export type CreateResponseRequest = ZodOutput<
   typeof CreateResponseRequestSchema

@@ -1,13 +1,13 @@
 import { z } from 'zod';
-import { CanonicalContentPartSchema } from '@/schemas/canonical/content';
+import { CanonicalContentPartSchema } from '@/schemas/contentSchema';
 import {
   CanonicalMessageSchema,
   CanonicalToolCallSchema,
-} from '@/schemas/canonical/message';
+} from '@/schemas/messageSchema';
 import {
   CanonicalToolChoiceSchema,
   CanonicalToolSchema,
-} from '@/schemas/canonical/tool';
+} from '@/schemas/toolSchema';
 
 export const CanonicalUsageSchema = z
   .object({

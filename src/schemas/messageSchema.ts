@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CanonicalContentPartSchema } from '@/schemas/canonical/content';
+import { CanonicalContentPartSchema } from '@/schemas/contentSchema';
 
 export const CanonicalToolCallSchema = z.object({
   id: z.string(),

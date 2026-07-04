@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import { CanonicalMessageSchema } from '@/schemas/canonical/message';
+import { CanonicalMessageSchema } from '@/schemas/messageSchema';
 import {
   CanonicalToolChoiceSchema,
   CanonicalToolSchema,
-} from '@/schemas/canonical/tool';
+} from '@/schemas/toolSchema';
 
 export const CanonicalRequestSchema = z.object({
   id: z.string(),

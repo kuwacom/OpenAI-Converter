@@ -2,12 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/configs/env', () => ({
   getAppConfig: () => ({
+    host: '127.0.0.1',
     port: 3000,
-    llamaCppBaseUrl: 'http://127.0.0.1:8080',
-    llamaCppModel: 'qwen3.5',
-    openAICompatibleBaseUrl: undefined,
-    openAICompatibleModel: 'gpt-4.1-mini',
-    defaultBackend: 'llamacpp-qwen-chatml',
+    corsOrigin: '*',
+    upstreamBaseUrl: 'https://api.openai.com/v1',
+    upstreamModel: '',
+    upstreamApiKey: '',
+    defaultBackend: 'openai-compatible-chat-completions',
     logLevel: 'debug',
   }),
 }));

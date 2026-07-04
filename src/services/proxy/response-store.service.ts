@@ -1,7 +1,7 @@
 import type {
   CreateResponseRequest,
   OpenAIResponse,
-} from '@/models/openai/responses';
+} from '@/models/responsesModel';
 import { HttpError } from '@/types/errors';
 
 type StoredResponseRecord = {

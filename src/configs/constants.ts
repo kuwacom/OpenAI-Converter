@@ -1,8 +1,13 @@
+// 上流ベースURLは `/v1` を含む形(http(s)://host/v1)を期待する。
+// 既定値は openai 公式だが実際の利用時には UPSTREAM_BASE_URL 経由で差し替えること
 export const DEFAULT_HOST = '127.0.0.1';
 export const DEFAULT_PORT = 3000;
 export const DEFAULT_CORS_ORIGIN = '*';
-export const DEFAULT_LLAMACPP_BASE_URL = 'http://127.0.0.1:8080';
-export const DEFAULT_LLAMACPP_MODEL = 'qwen3.5';
-export const DEFAULT_OPENAI_COMPATIBLE_MODEL = 'gpt-4.1-mini';
-export const DEFAULT_BACKEND = 'llamacpp-qwen-chatml';
+export const DEFAULT_UPSTREAM_BASE_URL = 'https://api.openai.com/v1';
+export const DEFAULT_UPSTREAM_MODEL = '';
+export const DEFAULT_BACKEND = 'openai-compatible-chat-completions';
 export const DEFAULT_LOG_LEVEL = 'info';
+
+// tool loop 実行時のデフォルト上限
+// request.maxToolCalls 未指定時にこの値で打ち切り、incompleteDetails.reason="max_tool_calls_exceeded" を返す
+export const DEFAULT_MAX_TOOL_CALLS = 8;

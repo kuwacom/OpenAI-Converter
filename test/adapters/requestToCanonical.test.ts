@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { toCanonicalRequest } from '@/adapters/openai-responses/request-to-canonical';
-import { CreateResponseRequestSchema } from '@/schemas/openai/responses';
+import { toCanonicalRequest } from '@/adapters/requestToCanonical';
+import { CreateResponseRequestSchema } from '@/schemas/responsesSchema';
 
 describe('request-to-canonical adapter', () => {
   it('captures instructions and tool calls consistently', () => {

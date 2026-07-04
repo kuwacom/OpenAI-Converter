@@ -13,7 +13,7 @@ import {
   createResponse,
   createStreamingResponse,
 } from '@/services/proxy/create-response.service';
-import { ResponseSchema } from '@/schemas/openai/responses';
+import { ResponseSchema } from '@/schemas/responsesSchema';
 
 const baseResponse = ResponseSchema.parse({
   id: 'resp-test',

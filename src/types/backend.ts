@@ -11,7 +11,6 @@ export type BackendExecutionContext = {
 
 export type BackendStreamDelta = {
   textDelta?: string;
-  rawChunk?: unknown;
 };
 
 export type BackendExecuteOptions = {
@@ -23,10 +22,11 @@ export type BackendStreamResult = {
   finalResponse: Promise<CanonicalResponse>;
 };
 
+// 各 backend 実装すべき最小契約。
+// chat template 概念は qwen 固有仕様だったため廃止した
 export interface BackendAdapter {
   readonly id: string;
   readonly provider: string;
-  readonly chatTemplate: string;
   readonly wireApi: 'responses' | 'chat-completions';
   execute(
     request: CanonicalRequest,

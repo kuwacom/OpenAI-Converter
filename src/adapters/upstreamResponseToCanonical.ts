@@ -4,7 +4,7 @@ import type {
 } from '@/models/canonical/response';
 import type { CanonicalContentPart } from '@/models/canonical/content';
 import type { CanonicalTool } from '@/models/canonical/tool';
-import type { OpenAIResponse } from '@/models/openai/responses';
+import type { OpenAIResponse } from '@/models/responsesModel';
 import {
   createCallId,
   createFunctionCallId,

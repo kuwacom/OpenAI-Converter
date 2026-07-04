@@ -3,7 +3,7 @@ import type {
   CanonicalResponse,
   CanonicalResponseOutput,
 } from '@/models/canonical/response';
-import type { OpenAIResponse } from '@/models/openai/responses';
+import type { OpenAIResponse } from '@/models/responsesModel';
 import { createMessageId } from '@/utils/ids';
 import { toJsonString } from '@/utils/json';
 

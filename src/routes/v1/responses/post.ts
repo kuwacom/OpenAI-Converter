@@ -1,8 +1,8 @@
 import type { Context } from 'hono';
 import { apiError, ErrorCode } from '@/lib/apiError';
 import { getAppConfig } from '@/configs/env';
-import { CreateResponseRequestSchema } from '@/schemas/openai/responses';
-import type { CreateResponseRequest } from '@/models/openai/responses';
+import { CreateResponseRequestSchema } from '@/schemas/responsesSchema';
+import type { CreateResponseRequest } from '@/models/responsesModel';
 import {
   createResponse,
   createStreamingResponse,
