@@ -6,13 +6,15 @@ import type {
 import { toCanonicalRequest } from '@/adapters/requestToCanonical';
 import {
   createInProgressOpenAIResponse,
-  createSyntheticAssistantMessageOutput,
-  getAssistantTextFromResponse,
   toOpenAIResponse,
 } from '@/adapters/canonicalToResponse';
 import { resolveBackend } from '@/services/backends/resolveBackend';
 import { responseStore } from '@/services/proxy/responseStoreService';
-import { createMessageId } from '@/utils/ids';
+import {
+  buildStreamingEvents,
+  sseEncode,
+} from '@/services/proxy/sseEventBuilder';
+import { createMessageId } from '@/lib/ids';
 
 const extractCurrentInputItems = (request: CreateResponseRequest) => {
   if (typeof request.input === 'string') {
@@ -38,110 +40,6 @@ const buildFailedResponse = (
     type: 'backend_error',
   },
 });
-
-const buildStreamingEvents = (
-  finalResponse: OpenAIResponse,
-  streamedText: string,
-  itemId: string,
-) => {
-  const events: Array<{ event: string; data: Record<string, unknown> }> = [];
-
-  const firstOutput = finalResponse.output.find(
-    (item: Record<string, unknown>) => item.type === 'message',
-  );
-  const finalAssistantText =
-    streamedText || getAssistantTextFromResponse(finalResponse);
-
-  if (finalAssistantText) {
-    events.push(
-      {
-        event: 'response.output_text.done',
-        data: {
-          type: 'response.output_text.done',
-          item_id: itemId,
-          output_index: 0,
-          content_index: 0,
-          text: finalAssistantText,
-        },
-      },
-      {
-        event: 'response.content_part.done',
-        data: {
-          type: 'response.content_part.done',
-          item_id: itemId,
-          output_index: 0,
-          content_index: 0,
-          part: {
-            type: 'output_text',
-            text: finalAssistantText,
-            annotations: [],
-          },
-        },
-      },
-      {
-        event: 'response.output_item.done',
-        data: {
-          type: 'response.output_item.done',
-          output_index: 0,
-          item:
-            firstOutput && firstOutput.type === 'message'
-              ? firstOutput
-              : {
-                  ...createSyntheticAssistantMessageOutput(finalAssistantText),
-                  id: itemId,
-                },
-        },
-      },
-    );
-  }
-
-  finalResponse.output
-    .filter((output) => !(finalAssistantText && output.type === 'message'))
-    .forEach((output: Record<string, unknown>, outputIndex: number) => {
-      events.push(
-        {
-          event: 'response.output_item.added',
-          data: {
-            type: 'response.output_item.added',
-            output_index: outputIndex + (finalAssistantText ? 1 : 0),
-            item: output,
-          },
-        },
-        {
-          event: 'response.output_item.done',
-          data: {
-            type: 'response.output_item.done',
-            output_index: outputIndex + (finalAssistantText ? 1 : 0),
-            item: output,
-          },
-        },
-      );
-    });
-
-  if (!finalAssistantText && finalResponse.output.length === 0) {
-    events.push({
-      event: 'response.output_item.done',
-      data: {
-        type: 'response.output_item.done',
-        output_index: 0,
-        item: createSyntheticAssistantMessageOutput(''),
-      },
-    });
-  }
-
-  events.push({
-    event: 'response.completed',
-    data: {
-      type: 'response.completed',
-      response: finalResponse,
-    },
-  });
-
-  return events;
-};
-
-const sseEncode = (event: string, data: Record<string, unknown>) =>
-  `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 
 const prepareExecution = (
   request: CreateResponseRequest,

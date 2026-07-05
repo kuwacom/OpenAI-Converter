@@ -6,7 +6,7 @@ import {
 import type { BackendAdapter, BackendStreamResult } from '@/types/backend';
 import type { CanonicalRequest } from '@/models/canonical/response';
 import type { ChatCompletionResponse } from '@/models/chatCompletionsModel';
-import { asObject } from '@/utils/json';
+import { asObject } from '@/lib/object';
 import { mapToChatCompletions } from '@/backends/chatCompletionsRequestMapper';
 import type { ChatCompletionRequestMapping } from '@/backends/chatCompletionsRequestMapper';
 import { mapChatCompletionToCanonicalResponse } from '@/backends/chatCompletionsResponseMapper';

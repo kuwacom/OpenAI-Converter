@@ -1,5 +1,6 @@
 import { ChatCompletionResponseSchema } from '@/schemas/chatCompletionsSchema';
 import type { ChatCompletionRequest } from '@/models/chatCompletionsModel';
+import { readSseDataLines } from '@/lib/sseStream';
 import { HttpError } from '@/types/errors';
 
 type UpstreamAuthContext = { apiKey?: string };
@@ -71,28 +72,8 @@ export async function* parseChatCompletionStream(response: Response) {
     throw new HttpError(502, 'chat-completion stream did not return a body');
   }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split('\n\n');
-    buffer = chunks.pop() ?? '';
-
-    for (const chunk of chunks) {
-      const dataLines = chunk
-        .split('\n')
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trim());
-
-      for (const dataLine of dataLines) {
-        if (!dataLine || dataLine === '[DONE]') continue;
-        yield ChatCompletionResponseSchema.parse(JSON.parse(dataLine));
-      }
-    }
+  for await (const dataLine of readSseDataLines(response)) {
+    if (!dataLine || dataLine === '[DONE]') continue;
+    yield ChatCompletionResponseSchema.parse(JSON.parse(dataLine));
   }
 }

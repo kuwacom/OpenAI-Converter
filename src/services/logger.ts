@@ -1,6 +1,6 @@
 import { Logger } from 'tslog';
 import { getAppConfig } from '@/configs/env';
-import { APP_NAME } from '@/configs/config';
+import { APP_NAME } from '@/configs/constants';
 
 const inspectCustomSymbol = Symbol.for('nodejs.util.inspect.custom');
 

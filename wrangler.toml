@@ -4,7 +4,9 @@ compatibility_date = "2026-03-22"
 
 [vars]
 CORS_ORIGIN = "*"
-DEFAULT_BACKEND = "llamacpp-qwen-chatml"
-LLAMACPP_BASE_URL = "http://127.0.0.1:8080"
-LLAMACPP_MODEL = "qwen3.5"
+DEFAULT_BACKEND = "openai-compatible-chat-completions"
 LOG_LEVEL = "info"
+
+# UPSTREAM_BASE_URL / UPSTREAM_MODEL / UPSTREAM_API_KEY は
+# デプロイ環境の Secrets(wrangler secret put ...)経由で注入してください。
+# 平文変数([vars])に API キー等の秘密を置かないこと。

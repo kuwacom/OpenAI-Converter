@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { serve } from '@hono/node-server';
 import app from '@/app';
 import { getAppConfig } from '@/configs/env';
-import { APP_NAME } from '@/configs/config';
+import { APP_NAME } from '@/configs/constants';
 import { serverLogger } from '@/services/logger';
 
 // クライアント切断等で SSE ストリーム cancel -> upstream fetch 中断時に

@@ -13,9 +13,12 @@ import {
   createFunctionCallId,
   createMessageId,
   createReasoningId,
-} from '@/utils/ids';
-import { asObject, safeJsonParse, toJsonString } from '@/utils/json';
-import { DEFAULT_MAX_TOOL_CALLS } from '@/configs/config';
+} from '@/lib/ids';
+import { safeJsonParse, toJsonString } from '@/lib/jsonUtils';
+import { asObject } from '@/lib/object';
+import { extractCustomToolInput } from '@/lib/customToolInput';
+import { extractTagContents, stripTags } from '@/lib/text';
+import { DEFAULT_MAX_TOOL_CALLS } from '@/configs/constants';
 
 const TOOL_TAG_PATTERN = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
 const THINK_TAG_PATTERN =
@@ -27,20 +30,6 @@ type ParsedToolCall = {
   rawArguments: string;
 };
 
-const extractTagContents = (content: string, pattern: RegExp) => {
-  const results: string[] = [];
-  const regex = new RegExp(pattern.source, pattern.flags);
-  let match: RegExpExecArray | null;
-
-  while ((match = regex.exec(content)) !== null) {
-    results.push(match[1] ?? '');
-  }
-
-  return results;
-};
-
-const stripTags = (content: string, pattern: RegExp) =>
-  content.replace(pattern, '').trim();
 
 const findToolByName = (tools: CanonicalTool[], name: string) => {
   const normalized = name.trim();
@@ -66,12 +55,7 @@ const parseTaggedToolCalls = (
     // downstream の Codex apply_patch 検証が "*** Begin Patch" を先頭認識できず失敗する
     const tool = findToolByName(tools, name);
     if (tool?.type === 'custom') {
-      const inputValue =
-        parsed && typeof parsed === 'object' && 'input' in parsed
-          ? (parsed as { input?: unknown }).input
-          : undefined;
-      const extracted =
-        typeof inputValue === 'string' ? inputValue : rawArguments;
+      const extracted = extractCustomToolInput(rawArguments);
       return {
         name,
         arguments: extracted,

@@ -13,8 +13,10 @@ import {
   createFunctionCallId,
   createMessageId,
   createReasoningId,
-} from '@/utils/ids';
-import { asObject, safeJsonParse } from '@/utils/json';
+} from '@/lib/ids';
+import { asObject } from '@/lib/object';
+import { safeJsonParse } from '@/lib/jsonUtils';
+import { extractCustomToolInput } from '@/lib/customToolInput';
 
 type CanonicalOutput = CanonicalResponse['output'][number];
 
@@ -24,23 +26,6 @@ const getToolByName = (
 ): CanonicalTool | undefined =>
   tools.find((tool) => tool.wireName === name || tool.name === name);
 
-// Custom(Freeform)ツールは単一文字列 input を受け取る設計。
-// 上流 wrapper は {"input":"<raw text>"} 形式で返すため、JSON 化せず "input" 値を素通しする。
-// これにより apply_patch 等 "*** Begin Patch ..." を持つテキストが JSON ラップされたまま
-// downstream(Codex 等)へ届くことで検証エラーになる問題を防ぐ
-const extractCustomToolInput = (rawArguments: string): string => {
-  const parsed = safeJsonParse<{ input?: unknown }>(rawArguments);
-  if (
-    parsed &&
-    typeof parsed === 'object' &&
-    'input' in parsed &&
-    typeof parsed.input === 'string'
-  ) {
-    return parsed.input;
-  }
-  // 万一 {"input": ...} 形状でない場合は原文を保持して情報落ちを防ぐ
-  return rawArguments;
-};
 
 // 上流から構造化されたツール呼び出しを受け取った場合の正規化。
 // function / custom / mcp / builtin 種別は wireName lookup 結果に従うことで、
@@ -79,6 +64,7 @@ const normalizeStructuredToolCall = (
       type: tool?.type ?? 'function',
       name: tool?.name ?? candidateName,
       wireName: tool?.wireName ?? candidateName,
+      parentNamespace: tool?.parentNamespace,
       arguments: rawArguments
         ? isCustomTool
           ? extractCustomToolInput(rawArguments)
@@ -131,16 +117,11 @@ const mapUsage = (
   response: ChatCompletionResponse,
 ): CanonicalResponse['usage'] | undefined => {
   if (!response.usage) return undefined;
+  // Chat Completions usage 形状には reasoning_tokens 相当フィールドがないため未設定とする
   return {
     inputTokens: response.usage.prompt_tokens,
     outputTokens: response.usage.completion_tokens,
     totalTokens: response.usage.total_tokens,
-    reasoningTokens:
-      response.usage.completion_tokens !== undefined &&
-      response.usage.prompt_tokens !== undefined &&
-      response.usage.total_tokens !== undefined
-        ? undefined
-        : undefined,
   };
 };
 

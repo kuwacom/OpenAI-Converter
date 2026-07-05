@@ -5,6 +5,9 @@ export const CanonicalToolSchema = z.object({
   type: z.enum(['function', 'custom', 'builtin', 'mcp', 'unknown']),
   name: z.string(),
   wireName: z.string(),
+  // 元宣言時の親名前空間。Codex 由来の {type:"namespace",tools:[...]} を子ごとにフラット化した場合のみ設定される。
+  // canonicalToResponse はこれを参照し Responses 形式 function_call へ namespace フィールドを復元する(往復整合用)
+  parentNamespace: z.string().optional(),
   description: z.string().optional(),
   parameters: z.record(z.string(), z.unknown()).optional(),
   strict: z.boolean().optional(),

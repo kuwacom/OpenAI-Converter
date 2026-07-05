@@ -4,8 +4,8 @@ import type {
   CanonicalResponseOutput,
 } from '@/models/canonical/response';
 import type { OpenAIResponse } from '@/models/responsesModel';
-import { createMessageId } from '@/utils/ids';
-import { toJsonString } from '@/utils/json';
+import { createMessageId } from '@/lib/ids';
+import { toJsonString } from '@/lib/jsonUtils';
 
 const toUsage = (response: CanonicalResponse) => {
   if (!response.usage) {
@@ -65,15 +65,20 @@ const toToolCallOutputItem = (
   const toolCall = output.toolCall;
 
   if (toolCall.type === 'function') {
-    return {
+    // 名前空間(namespace)の子関数として展開されていた場合、Responses 形式へ namespace フィールドを復元する。
+    // codex-relay 実測慣習に準拠し、type=function_call のまま name=子単独名 + namespace=親名前空間名 を付与する往復形とする
+    const fnBase = {
       id: output.id,
-      type: 'function_call',
+      type: 'function_call' as const,
       call_id: toolCall.callId,
       name: toolCall.name,
       arguments:
         toolCall.rawArguments ?? toJsonString(toolCall.arguments, '{}'),
       status: output.status,
     };
+    return toolCall.parentNamespace
+      ? { ...fnBase, namespace: toolCall.parentNamespace }
+      : fnBase;
   }
 
   if (toolCall.type === 'custom') {
@@ -135,7 +140,11 @@ const toReasoningOutputItem = (
   encrypted_content: output.encryptedContent ?? null,
 });
 
-const toOutputItem = (output: CanonicalResponseOutput) => {
+type OpenAIResponseOutputItem = OpenAIResponse['output'][number];
+
+const toOutputItem = (
+  output: CanonicalResponseOutput,
+): OpenAIResponseOutputItem => {
   if (output.kind === 'message') {
     return toMessageOutputItem(output);
   }
@@ -146,6 +155,9 @@ const toOutputItem = (output: CanonicalResponseOutput) => {
 
   return toReasoningOutputItem(output);
 };
+// 各 to* 関数の戻り値は OpenAI Responses wire 形状の出力アイテム。
+// toOutputItem が返す union を OpenAIResponse['output'][number] へ明示することで、
+// 呼び出し側(toOpenAIResponse 内 .map)の型安全性を担保する
 
 export const createInProgressOpenAIResponse = (
   request: CanonicalRequest,

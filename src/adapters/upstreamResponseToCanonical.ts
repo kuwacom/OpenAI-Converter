@@ -3,17 +3,19 @@ import type {
   CanonicalResponse,
 } from '@/models/canonical/response';
 import type { CanonicalContentPart } from '@/models/canonical/content';
-import type { CanonicalTool } from '@/models/canonical/tool';
 import type { OpenAIResponse } from '@/models/responsesModel';
 import {
   createCallId,
   createFunctionCallId,
   createReasoningId,
-} from '@/utils/ids';
-import { safeJsonParse, toJsonString } from '@/utils/json';
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
+} from '@/lib/ids';
+import { safeJsonParse, toJsonString } from '@/lib/jsonUtils';
+import { isRecord } from '@/lib/object';
+import {
+  getItemId,
+  getItemStatus,
+  resolveTool,
+} from '@/lib/responseItem';
 
 const mapContentPart = (
   part: Record<string, unknown>,
@@ -50,38 +52,6 @@ const isReasoningItem = (
   encrypted_content?: unknown;
 } => value.type === 'reasoning';
 
-const getItemStatus = (item: Record<string, unknown>) =>
-  typeof item.status === 'string' ? item.status : 'completed';
-
-const getItemId = (
-  item: Record<string, unknown>,
-  fallback = createFunctionCallId(),
-) => (typeof item.id === 'string' ? item.id : fallback);
-
-const resolveTool = (
-  tools: CanonicalTool[],
-  name: string,
-  itemType: string,
-): CanonicalTool =>
-  tools.find((tool) => tool.name === name || tool.wireName === name) ?? {
-    id: createFunctionCallId(),
-    type:
-      itemType === 'mcp_call'
-        ? 'mcp'
-        : itemType === 'custom_tool_call'
-          ? 'custom'
-          : itemType === 'function_call'
-            ? 'function'
-            : 'builtin',
-    name,
-    wireName: name,
-    originalType: itemType,
-    raw: {
-      type: itemType,
-      name,
-    },
-  };
-
 const getResponseText = (outputItems: OpenAIResponse['output']) =>
   outputItems
     .filter(isMessageItem)
@@ -99,6 +69,34 @@ const getResponseText = (outputItems: OpenAIResponse['output']) =>
     )
     .map((part) => part.text)
     .join('');
+
+type UsageLike = {
+  input_tokens?: unknown;
+  output_tokens?: unknown;
+  total_tokens?: unknown;
+  output_tokens_details?: unknown;
+};
+
+// response.usage は Zod 上 unknown で保持しているため、ここで canonical usage 形状へ安全マップする。
+// 各トークン数フィールドが number 型のときのみ採用し、それ以外は undefined(欠損許容)とする
+const mapUpstreamUsageToCanonical = (raw: unknown) => {
+  const usage = isRecord(raw) ? (raw as UsageLike) : undefined;
+  if (!usage) return undefined;
+
+  const details = isRecord(usage.output_tokens_details)
+    ? usage.output_tokens_details
+    : {};
+
+  const numOrUndef = (value: unknown): number | undefined =>
+    typeof value === 'number' ? value : undefined;
+
+  return {
+    inputTokens: numOrUndef(usage.input_tokens),
+    outputTokens: numOrUndef(usage.output_tokens),
+    totalTokens: numOrUndef(usage.total_tokens),
+    reasoningTokens: numOrUndef(details.reasoning_tokens),
+  };
+};
 
 export const toCanonicalResponse = (
   request: CanonicalRequest,
@@ -221,42 +219,7 @@ export const toCanonicalResponse = (
     user: response.user ?? null,
     metadata: response.metadata,
     include: request.include,
-    usage: response.usage
-      ? {
-          inputTokens:
-            typeof response.usage === 'object' &&
-            response.usage !== null &&
-            'input_tokens' in response.usage &&
-            typeof response.usage.input_tokens === 'number'
-              ? response.usage.input_tokens
-              : undefined,
-          outputTokens:
-            typeof response.usage === 'object' &&
-            response.usage !== null &&
-            'output_tokens' in response.usage &&
-            typeof response.usage.output_tokens === 'number'
-              ? response.usage.output_tokens
-              : undefined,
-          totalTokens:
-            typeof response.usage === 'object' &&
-            response.usage !== null &&
-            'total_tokens' in response.usage &&
-            typeof response.usage.total_tokens === 'number'
-              ? response.usage.total_tokens
-              : undefined,
-          reasoningTokens:
-            typeof response.usage === 'object' &&
-            response.usage !== null &&
-            'output_tokens_details' in response.usage &&
-            typeof response.usage.output_tokens_details === 'object' &&
-            response.usage.output_tokens_details !== null &&
-            'reasoning_tokens' in response.usage.output_tokens_details &&
-            typeof response.usage.output_tokens_details.reasoning_tokens ===
-              'number'
-              ? response.usage.output_tokens_details.reasoning_tokens
-              : undefined,
-        }
-      : undefined,
+    usage: mapUpstreamUsageToCanonical(response.usage),
     raw: {
       upstream: response,
     },

@@ -13,8 +13,9 @@ import {
   createId,
   createMessageId,
   createResponseId,
-} from '@/utils/ids';
-import { asObject, safeJsonParse, toJsonString } from '@/utils/json';
+} from '@/lib/ids';
+import { safeJsonParse, toJsonString } from '@/lib/jsonUtils';
+import { asObject } from '@/lib/object';
 
 type PreviousConversationContext = {
   previousInputItems?: unknown[];
@@ -236,6 +237,7 @@ const createToolCallFromItem = (
       type: tool?.type ?? 'function',
       name,
       wireName: tool?.wireName ?? name,
+    parentNamespace: (typeof item.namespace === 'string' ? item.namespace : undefined) ?? tool?.parentNamespace,
       arguments:
         typeof item.arguments === 'string'
           ? (safeJsonParse(item.arguments) ?? item.arguments)
@@ -276,6 +278,7 @@ const createToolCallFromItem = (
           : 'builtin'),
     name,
     wireName: tool?.wireName ?? name,
+    parentNamespace: (typeof item.namespace === 'string' ? item.namespace : undefined) ?? tool?.parentNamespace,
     arguments: item.arguments ?? item.input ?? item.payload,
     rawArguments:
       typeof item.arguments === 'string'
@@ -289,6 +292,59 @@ const createToolCallFromItem = (
   };
 };
 
+
+/**
+ * ### expandRequestTools
+ * request.tools の各エントリを正規化する。namespace 型のツール群は子関数へフラット化する。
+ *
+ * Codex 由来の {type:"namespace", name:"mcp__...", tools:[{type:"function", ...}, ...]} 形式を想定。
+ * 上流 Chat Completions には namespace 概念がないため、各子を wireName=`${nsName}-${childName}` の独立関数として提示する(codex-relay 実測慣習に準拠)。
+ * 親元 namespace 名は parentNamespace フィールドへ保持し canonicalToResponse 出力時の namespace 復元で参照する。
+ */
+const expandRequestTools = (
+  rawTools: readonly unknown[],
+): CanonicalTool[] =>
+  rawTools.flatMap((entry): CanonicalTool[] => {
+    const tool = asObject(entry);
+    if (!tool) return [];
+
+    if (typeof tool.type === 'string' && tool.type === 'namespace') {
+      // 親名前空間名。欠前空間名。欠損時は衝突回避のため固定文字列へ退化する(呼出し側での復号整合は保証しない)
+      const nsName =
+        typeof tool.name === 'string'
+          ? tool.name
+          : 'namespace';
+      const children = Array.isArray(tool.tools) ? tool.tools : [];
+      return children.map((childEntry): CanonicalTool => {
+        const childObject = asObject(childEntry);
+        // 子が object 形状でなければ内容落ちを防ぐため unknown 型 placeholder へ寄せる
+        if (!childObject) {
+          return {
+            id: createId('tool'),
+            type: 'unknown',
+            name: `${nsName}-unknown`,
+            wireName: `${nsName}-unknown`,
+            parentNamespace: nsName,
+            description: 'Unrecognized nested tool entry',
+            originalType: 'namespace',
+            raw: { parent: tool, child: childEntry },
+          };
+        }
+        // 子自体も既定の tool 形式とみなし normalizeTool 経由で一次正規化する。
+        // 子種別(function/custom/builtin 等)ごとの schema/strict/parameters 保持は子自身の型宣言優先
+        const base = normalizeTool(childObject, 0);
+        return {
+          ...base,
+          // 上流へ提示する一意な関数名。親名前空間接頭辞付与で同名子関数の衝突を防ぐ
+          wireName: `${nsName}-${base.wireName}`,
+          parentNamespace: nsName,
+          raw: { parent: tool, child: childObject },
+        };
+      });
+    }
+
+    return [normalizeTool(tool, 0)];
+  });
 const normalizeMessageLikeItem = (
   item: Record<string, unknown>,
   tools: CanonicalTool[],
@@ -451,10 +507,7 @@ export const toCanonicalRequest = (
   request: CreateResponseRequest,
   context: PreviousConversationContext = {},
 ): CanonicalRequest => {
-  const tools = (request.tools ?? []).map(
-    (tool: Record<string, unknown>, index: number) =>
-      normalizeTool(tool, index),
-  );
+  const tools = expandRequestTools(request.tools ?? []);
   const inputItems = normalizeInputItems(request, context);
   const messages = inputItems.flatMap((item) =>
     toCanonicalMessage(item, tools),
