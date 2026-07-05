@@ -292,8 +292,10 @@ export const executeToolLoop = async ({
 
 
 import { executeWebSearch } from '@/lib/webSearch/execution';
+import { normalizeWebSearchCallPayload } from '@/lib/webSearch/core';
 import {
   createWebSearchSourceRegistry,
+  buildAnnotatedWebSearchText,
 } from '@/lib/webSearch/sources';
 import {
   extractWebSearchToolCallsFromResponse,
@@ -301,6 +303,10 @@ import {
   hasWebSearchBuiltin,
 } from '@/services/proxy/webSearchContext';
 import type { WebSearchConfig } from '@/types/env';
+import type {
+  WebSearchCallPayload,
+  WebSearchSourceRecord,
+} from '@/types/webSearch';
 
 /**
  * ### executeWebSearchSubLoop
@@ -335,6 +341,8 @@ export const executeWebSearchSubLoop = async ({
   }
 
   const registry = createWebSearchSourceRegistry();
+  // 実行した web_search 呼出のアクション情報蓄積用。最終回答出力時に web_search_call アイテム群を合成するため保持
+  const executedCalls: WebSearchExecutedCall[] = [];
   let response = synthesizeCanonicalResponseOutputs(initialResponse, request.tools);
   let messages = [...request.messages];
   let totalToolCalls = 0;
@@ -351,9 +359,16 @@ export const executeWebSearchSubLoop = async ({
       extractWebSearchToolCallsFromResponse(toolCallItems),
     );
 
-    if (wsCallIds.size === 0) {
-      return response;
-    }
+  if (wsCallIds.size === 0) {
+    // 最終回答到達。upstream 合成関数呼出は内部プロセスで完結させるため output から除去し、
+    // 代わりに OpenAI 公式形式の web_search_call アイテム + url_citation 注釈付き assistant message へ差し替える
+    return buildWebSearchAwareFinalResponse({
+      response,
+      executedCalls,
+      registry,
+    });
+    return response;
+  }
 
     totalToolCalls += wsCallIds.size;
     if (totalToolCalls > maxToolCalls) {
@@ -371,19 +386,24 @@ export const executeWebSearchSubLoop = async ({
       ...messages,
       toAssistantToolCallMessage(wsToolCalls.map((item) => item.toolCall)),
       ...(await Promise.all(
-        wsToolCalls.map(async (item) => {
-          const tc = item.toolCall;
-          const result = await executeWebSearch({
-            callArguments: tc.arguments,
-            toolsConfigRaw: rawToolsForExecute,
-            registry,
-            params: { config: webSearchConfig },
-            signal,
-          });
-          return toTextToolResultMessage(tc.callId, result.modelInputText);
-        }),
-      )),
-    ];
+      wsToolCalls.map(async (item) => {
+        const tc = item.toolCall;
+        const result = await executeWebSearch({
+          callArguments: tc.arguments,
+          toolsConfigRaw: rawToolsForExecute,
+          registry,
+          params: { config: webSearchConfig },
+          signal,
+        });
+        // 公式 web_search_call 形状の action へ蓄積(最終回答出力時合成用)
+        executedCalls.push({
+          id: tc.callId || tc.id || createFunctionCallId(),
+          payload: normalizeWebSearchCallPayload(tc.arguments),
+        });
+        return toTextToolResultMessage(tc.callId, result.modelInputText);
+      }),
+    )),
+];
 
     response = synthesizeCanonicalResponseOutputs(
       await executeTurn({ ...request, messages, stream: false }),
@@ -405,3 +425,107 @@ const toTextToolResultMessage = (
   toolCallId: callId,
   content: [{ type: 'text', text }],
 });
+
+// 実行済み web_search 呼出の蓄積レコード。最終回答出力時に web_search_call アイテム群を合成するため保持
+type WebSearchExecutedCall = {
+  id: string;
+  payload: WebSearchCallPayload;
+};
+
+/**
+ * ### toCanonicalWebSearchAction
+ * payload(action/query/url) を OpenAI 公式 web_search_call.action 形状(search/open_page/find_in_page) へ詰め替える
+ */
+const toCanonicalWebSearchAction = (
+  payload: WebSearchCallPayload,
+):
+  | { type: 'search'; query?: string | null; queries?: string[] }
+  | { type: 'open_page'; url?: string | null }
+  | { type: 'find_in_page'; url?: string | null; pattern?: string | null }
+  | { type: string } => {
+  if (payload.action === 'open_page') {
+    return { type: 'open_page', url: payload.url };
+  }
+  if (payload.action === 'find_in_page') {
+    return { type: 'find_in_page', url: payload.url, pattern: payload.query };
+  }
+  return {
+    type: 'search',
+    query: payload.query,
+    queries: payload.queries ?? undefined,
+  };
+};
+
+/**
+ * ### buildWebSearchAwareFinalResponse
+ * executeWebSearchSubLoop 最終段。upstream 合成関数呼出(function_call)を output から除去し、
+ * 代わりに OpenAI 公式形式 web_search_call アイテム群 + url_citation 注釈付き assistant message アイテムを構築する。
+ *
+ * Codex 本体は web_search_call を non-tool 扱いで TurnItem::WebSearch へマッピングするため、function_call 形状が残るとハングリスクがある。
+ * よって必ず本関数経由で公式形状へ差し替える
+ *
+ * @param response subLoop 最終レスポンス(合成 function_call 含む可能性)
+ * @param executedCalls 実行した検索呼出群(web_search_call アイテム生成用)
+ * @param registry 検索で蓄積した source 群(url_citation 生成用)
+ * @returns 公式形状 web_search_call + url_citation 付き message へ再構築した response
+ */
+export const buildWebSearchAwareFinalResponse = ({
+  response,
+  executedCalls,
+  registry,
+}: {
+  response: CanonicalResponse;
+  executedCalls: readonly WebSearchExecutedCall[];
+  registry: Map<string, WebSearchSourceRecord>;
+}): CanonicalResponse => {
+  // 合成関数 builtin_web_search 由来の tool_call を除去(reasoning 等その他アイテムは維持)
+  const filteredOutput = response.output.filter(
+    (item) =>
+      !(
+        item.kind === 'tool_call' &&
+        (item.toolCall.wireName === WEB_SEARCH_SYNTHETIC_WIRE_NAME ||
+          item.toolCall.name === WEB_SEARCH_SYNTHETIC_WIRE_NAME)
+      ),
+  );
+
+  // 各実行呼出を OpenAI 公式 web_search_call アイテム群へ変換して先頭側へ挿入。
+  // 順序は実行順(in_progress -> completed の流れを反映)。Codex TUI はこの並びで「Searched」表示を行う
+  const webSearchCallItems = executedCalls.map((call) => ({
+    kind: 'web_search_call' as const,
+    id: call.id,
+    status: 'completed',
+    action: toCanonicalWebSearchAction(call.payload),
+  }));
+
+  // assistant message 本文から引用マーカー/URL を検出し url_citation annotations を付与。
+  // source 未存在 or テキスト内参照無し時は空配列となりフォールバック Sources 行は buildAnnotatedWebSearchText 内部で判断される
+  const messageItem = filteredOutput.find(
+    (item): item is Extract<CanonicalResponseOutput, { kind: 'message' }> =>
+      item.kind === 'message',
+  );
+
+  let newOutput: CanonicalResponseOutput[];
+
+  if (messageItem && registry.size > 0) {
+    const textPart = messageItem.content.find((part) => part.type === 'text');
+    if (textPart?.type === 'text') {
+      const annotated = buildAnnotatedWebSearchText(textPart.text, registry);
+      const updatedMessageItem: typeof messageItem = {
+        ...messageItem,
+        content: messageItem.content.map((part) =>
+          part.type === 'text'
+            ? { ...part, text: annotated.text, annotations: annotated.annotations }
+            : part,
+        ),
+      };
+      const restOutput = filteredOutput.filter((item) => item !== messageItem);
+      newOutput = [...webSearchCallItems, updatedMessageItem, ...restOutput];
+    } else {
+      newOutput = [...webSearchCallItems, ...filteredOutput];
+    }
+  } else {
+    newOutput = [...webSearchCallItems, ...filteredOutput];
+  }
+
+  return { ...response, output: newOutput };
+};

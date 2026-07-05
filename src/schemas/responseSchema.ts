@@ -41,10 +41,43 @@ export const CanonicalOutputReasoningSchema = z.object({
   encryptedContent: z.string().optional(),
 });
 
+// OpenAI Responses API の web_search_call action 形状(search/open_page/find_in_page/other)
+// Codex 本体 protocol/src/models.rs WebSearchAction と整合させる
+export const CanonicalWebSearchActionSchema = z.union([
+  z.object({
+    type: z.literal('search'),
+    query: z.string().nullable().optional(),
+    queries: z.array(z.string()).optional(),
+  }),
+  z.object({
+    type: z.literal('open_page'),
+    url: z.string().nullable().optional(),
+  }),
+  z.object({
+    type: z.literal('find_in_page'),
+    url: z.string().nullable().optional(),
+    pattern: z.string().nullable().optional(),
+  }),
+  z.object({
+    type: z.string(),
+  }).passthrough(),
+]);
+
+// web_search builtin 実行結果アイテム。OpenAI 本家 output 配列内の {type:"web_search_call"} 相当。
+// non-tool 扱い(Codex handle_non_tool_response_item 経由で TurnItem::WebSearch へマップ)のため function_call とは分離する
+export const CanonicalOutputWebSearchCallSchema = z.object({
+  kind: z.literal('web_search_call'),
+  id: z.string(),
+  status: z.string(),
+  // 実行したアクション情報。未解決時は省略可(公式も省略許容)
+  action: CanonicalWebSearchActionSchema.optional(),
+});
+
 export const CanonicalResponseOutputSchema = z.union([
   CanonicalOutputMessageSchema,
   CanonicalOutputToolCallSchema,
   CanonicalOutputReasoningSchema,
+  CanonicalOutputWebSearchCallSchema,
 ]);
 
 export const CanonicalResponseSchema = z.object({

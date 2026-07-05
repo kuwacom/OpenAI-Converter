@@ -40,7 +40,9 @@ const toMessageOutputItem = (
         {
           type: 'output_text',
           text: part.text,
-          annotations: [],
+          // web_search 利用時にパートへ付与された url_citation 注釈をそのまま反映する。
+          // OpenAI 本家同様 output_text content へ紐づく形式とし Codex CLI 引用リンク表示に供する
+          annotations: part.annotations ?? [],
         },
       ];
     }
@@ -59,6 +61,21 @@ const toMessageOutputItem = (
   }),
 });
 
+
+/**
+ * ### toWebSearchCallOutputItem
+ * CanonicalOutputWebSearchCall を OpenAI Responses 形式 web_search_call アイテムへ変換する。
+ * 公式仕様準拠形状: {id, type:"web_search_call", status, action?}。
+ * Codex 本体はこれを non-tool 扱いで TurnItem::WebSearch へマッピングする(UI 上「Searched」表示に使用)
+ */
+const toWebSearchCallOutputItem = (
+  output: Extract<CanonicalResponseOutput, { kind: 'web_search_call' }>,
+) => ({
+  id: output.id,
+  type: 'web_search_call',
+  status: output.status,
+  ...(output.action ? { action: output.action } : {}),
+});
 const toToolCallOutputItem = (
   output: Extract<CanonicalResponseOutput, { kind: 'tool_call' }>,
 ) => {
@@ -151,6 +168,11 @@ const toOutputItem = (
 
   if (output.kind === 'tool_call') {
     return toToolCallOutputItem(output);
+  }
+
+  // web_search_call は non-tool 出力アイテム。Codex 本体はこれを TurnItem::WebSearch へマッピングする
+  if (output.kind === 'web_search_call') {
+    return toWebSearchCallOutputItem(output);
   }
 
   return toReasoningOutputItem(output);
