@@ -290,3 +290,118 @@ export const executeToolLoop = async ({
 };
 
 
+
+import { executeWebSearch } from '@/lib/webSearch/execution';
+import {
+  createWebSearchSourceRegistry,
+} from '@/lib/webSearch/sources';
+import {
+  extractWebSearchToolCallsFromResponse,
+  WEB_SEARCH_SYNTHETIC_WIRE_NAME,
+  hasWebSearchBuiltin,
+} from '@/services/proxy/webSearchContext';
+import type { WebSearchConfig } from '@/types/env';
+
+/**
+ * ### executeWebSearchSubLoop
+ * web_search builtin 専用の proxy 完結型サブループ。
+ *
+ * upstream 応答に合成関数(builtin_web_search)呼出が含まれる限り:
+ *   1. ツールコール引数を SearXNG 経由で実行
+ *   2. assistant tool_call + tool result メッセージを messages へ追加
+ *   3. 再ターンして最終回答を得る
+ *
+ * ユーザ宣言 custom/function ツールは Codex クライアント側ループで処理されるため対象外。
+ * maxToolCalls 上限到達時は incompleteDetails.reason="max_tool_calls_exceeded" を付与する
+ */
+export const executeWebSearchSubLoop = async ({
+  request,
+  initialResponse,
+  executeTurn,
+  rawToolsForExecute,
+  webSearchConfig,
+  signal,
+}: {
+  request: CanonicalRequest;
+  initialResponse: CanonicalResponse;
+  executeTurn: (nextRequest: CanonicalRequest) => Promise<CanonicalResponse>;
+  rawToolsForExecute: readonly unknown[];
+  webSearchConfig: WebSearchConfig;
+  signal?: AbortSignal;
+}): Promise<CanonicalResponse> => {
+  // リクエストが web_search builtin を含まない場合はそのまま返す(早期 exit)
+  if (!hasWebSearchBuiltin(request.tools)) {
+    return initialResponse;
+  }
+
+  const registry = createWebSearchSourceRegistry();
+  let response = synthesizeCanonicalResponseOutputs(initialResponse, request.tools);
+  let messages = [...request.messages];
+  let totalToolCalls = 0;
+  const maxToolCalls = request.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
+
+  while (true) {
+    const toolCallItems = response.output.filter(
+      (
+        item,
+      ): item is Extract<CanonicalResponseOutput, { kind: 'tool_call' }> =>
+        item.kind === 'tool_call',
+    );
+    const wsCallIds = new Set(
+      extractWebSearchToolCallsFromResponse(toolCallItems),
+    );
+
+    if (wsCallIds.size === 0) {
+      return response;
+    }
+
+    totalToolCalls += wsCallIds.size;
+    if (totalToolCalls > maxToolCalls) {
+      return {
+        ...response,
+        incompleteDetails: { reason: 'max_tool_calls_exceeded' },
+      };
+    }
+
+    const wsToolCalls = toolCallItems.filter((item) =>
+      item.toolCall.wireName === WEB_SEARCH_SYNTHETIC_WIRE_NAME ||
+      item.toolCall.name === WEB_SEARCH_SYNTHETIC_WIRE_NAME
+    );
+    messages = [
+      ...messages,
+      toAssistantToolCallMessage(wsToolCalls.map((item) => item.toolCall)),
+      ...(await Promise.all(
+        wsToolCalls.map(async (item) => {
+          const tc = item.toolCall;
+          const result = await executeWebSearch({
+            callArguments: tc.arguments,
+            toolsConfigRaw: rawToolsForExecute,
+            registry,
+            params: { config: webSearchConfig },
+            signal,
+          });
+          return toTextToolResultMessage(tc.callId, result.modelInputText);
+        }),
+      )),
+    ];
+
+    response = synthesizeCanonicalResponseOutputs(
+      await executeTurn({ ...request, messages, stream: false }),
+      request.tools,
+    );
+  }
+};
+
+/**
+ * ### toTextToolResultMessage
+ * 単純な文字列 content の tool result メッセージ生成ヘルパ(executeWebSearchSubLoop 用)
+ */
+const toTextToolResultMessage = (
+  callId: string,
+  text: string,
+): CanonicalMessage => ({
+  id: createMessageId(),
+  role: 'tool',
+  toolCallId: callId,
+  content: [{ type: 'text', text }],
+});

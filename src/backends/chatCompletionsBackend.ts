@@ -6,14 +6,19 @@ import {
 import type { BackendAdapter, BackendStreamResult } from '@/types/backend';
 import type { CanonicalRequest } from '@/models/canonical/response';
 import type { ChatCompletionResponse } from '@/models/chatCompletionsModel';
+import type { WebSearchConfig } from '@/types/env';
 import { asObject } from '@/lib/object';
 import { mapToChatCompletions } from '@/backends/chatCompletionsRequestMapper';
 import type { ChatCompletionRequestMapping } from '@/backends/chatCompletionsRequestMapper';
 import { mapChatCompletionToCanonicalResponse } from '@/backends/chatCompletionsResponseMapper';
 import {
   executeToolLoop,
+  executeWebSearchSubLoop,
   synthesizeCanonicalResponseOutputs,
 } from '@/services/proxy/tooling';
+import {
+  injectWebSearchContext,
+} from '@/services/proxy/webSearchContext';
 import { needsUpstreamContinuation } from '@/services/proxy/upstreamContinuationService';
 
 // ストリーミング時、delta.tool_calls の部分 JSON を index 単位で結合するための可変ラッパー。
@@ -115,6 +120,7 @@ type ExecuteContext = {
   model?: string;
   apiKey?: string;
   signal?: AbortSignal;
+  webSearchConfig?: WebSearchConfig;
 };
 
 /**
@@ -128,6 +134,7 @@ const resolveBaseContext = (
   model?: string;
   apiKey?: string;
   signal?: AbortSignal;
+  webSearchConfig?: WebSearchConfig;
 } => {
   if (!context.baseUrl) {
     throw new Error('upstream base url required for chat-completions backend');
@@ -146,6 +153,13 @@ export const executeChatCompletionsBlocking = async (
   options?: { disableToolLoop?: boolean },
 ) => {
   const base = resolveBaseContext(context);
+
+  // リクエストへ web_search builtin が含まれる場合、合成関数定義+指示注入済みの request へ差し替える。
+  // 注入済み effectiveRequest で upstream へ送り、応答後は web_search 専用 proxy 完結型サブループで回す
+  const { request: injected, rawToolsForExecute } =
+    injectWebSearchContext(request);
+  const hasWs = rawToolsForExecute.length > 0;
+  const effectiveRequest = injected;
 
   const executeTurn = async (nextRequest: CanonicalRequest) => {
     const mapping = mapToChatCompletions(nextRequest, base.model);
@@ -175,11 +189,24 @@ export const executeChatCompletionsBlocking = async (
         incompleteDetails: { reason: 'upstream_truncated' },
       };
     }
-    return canonicalResponse;
+  return canonicalResponse;
   };
 
-  const initialResponse = await executeTurn(request);
-  if (options?.disableToolLoop) return initialResponse;
+  const initialResponse = await executeTurn(effectiveRequest);
+  if (options?.disableToolLoop && !(hasWs && base.webSearchConfig)) {
+    return initialResponse;
+  }
+
+  if (hasWs && base.webSearchConfig) {
+    return executeWebSearchSubLoop({
+      request: effectiveRequest,
+      initialResponse,
+      executeTurn,
+      rawToolsForExecute,
+      webSearchConfig: base.webSearchConfig,
+      signal: base.signal,
+    });
+  }
 
   return executeToolLoop({
     request,
@@ -198,10 +225,16 @@ export const streamChatCompletions = async (
 ): Promise<BackendStreamResult> => {
   const base = resolveBaseContext(context);
 
-  // streaming 中は backend 側 request.stream も true にしておく
+  // streaming 中は backend 側 request.stream も true にしておく。
   // mapping 自体は stream:true 指定で生成、その後本体も上書きし二重にならないよう整える
+  // web_search builtin 検知時は合成関数定義+指示注入済み request へ差し替える(blocking 経路と同じ方針)
+  const { request: injected, rawToolsForExecute } =
+    injectWebSearchContext(request);
+  const hasWs = rawToolsForExecute.length > 0;
+  const effectiveRequest = injected;
+
   const mapping: ChatCompletionRequestMapping = mapToChatCompletions(
-    { ...request, stream: true },
+    { ...effectiveRequest, stream: true },
     base.model,
   );
   const upstreamResponse = await createChatCompletion({
@@ -232,15 +265,36 @@ export const streamChatCompletions = async (
         const rawContent = chunk.choices[0]?.delta?.content;
         if (typeof rawContent === 'string' && rawContent.length > 0) {
           yield { textDelta: rawContent };
-        }
-      }
-      resolveFinalResponse(
-        synthesizeCanonicalResponseOutputs(
-          mapChatCompletionToCanonicalResponse(request, mapping, aggregate),
-          request.tools,
-        ),
-      );
-    } catch (error) {
+       }
+    }
+  const initialSynthesized = synthesizeCanonicalResponseOutputs(
+    mapChatCompletionToCanonicalResponse(effectiveRequest, mapping, aggregate),
+    effectiveRequest.tools,
+  );
+
+  // web_search builtin 未検知時はそのまま最終応答。検知時は proxy 完結型サブループで検索結果を取り込み再ターンする。
+  // ストリーミング配信済み分(初期テキスト差分)はそのまま流れ、サブループ後の最終回答は上位 createStreamingService 側で上書き反映する
+  const webSearchConfig = base.webSearchConfig;
+  if (!hasWs || !webSearchConfig) {
+    resolveFinalResponse(initialSynthesized);
+  } else {
+    resolveFinalResponse(
+      await executeWebSearchSubLoop({
+        request: effectiveRequest,
+        initialResponse: initialSynthesized,
+        executeTurn: async (nextRequest: CanonicalRequest) => {
+          const nonStreamMapping = mapToChatCompletions({ ...nextRequest, stream: false }, base.model);
+          const raw = await createChatCompletion({ baseUrl: base.baseUrl, body: nonStreamMapping.request, signal: base.signal, apiKey: base.apiKey });
+          const parsed = await parseChatCompletion(raw);
+          return synthesizeCanonicalResponseOutputs(mapChatCompletionToCanonicalResponse(nextRequest, nonStreamMapping, parsed), nextRequest.tools);
+        },
+        rawToolsForExecute,
+        webSearchConfig,
+       signal: base.signal,
+     }),
+   );
+ }
+} catch (error) {
       rejectFinalResponse(error);
       throw error;
     }
@@ -259,6 +313,7 @@ export const openAICompatibleChatCompletionsBackend: BackendAdapter = {
       model: ctx.config.upstreamModel || undefined,
       apiKey: ctx.config.upstreamApiKey || undefined,
       signal: ctx.signal,
+      webSearchConfig: ctx.config.webSearch,
     }),
   stream: async (request, ctx) =>
     streamChatCompletions(request, {
@@ -266,5 +321,6 @@ export const openAICompatibleChatCompletionsBackend: BackendAdapter = {
       model: ctx.config.upstreamModel || undefined,
       apiKey: ctx.config.upstreamApiKey || undefined,
       signal: ctx.signal,
+      webSearchConfig: ctx.config.webSearch,
     }),
 };
