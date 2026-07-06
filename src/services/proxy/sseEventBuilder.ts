@@ -15,36 +15,42 @@ type SseEvent = {
  * OpenAI Responses SSE 形式(event 行 + data 行 + 空行)へエンコードする
  */
 export const sseEncode = (event: string, data: Record<string, unknown>) =>
-  `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  'event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n';
 
 /**
  * ### buildStreamingEvents
- * 最終 response 確定後に Codex 等 client へ一括送信する残イベント群を構築する。
+ * 最終 response 確定後に Codex 等 client へ一括送信する残イベント群を構築する
  *
- * 配信順序:
- * 1. assistant text を流していた場合は output_text.done -> content_part.done -> output_item.done(先頭 message)
- * 2. message 以外の output(function_call/reasoning/custom_tool_call 等)を added/done ペアで配信
- * 3. 全く出力がない場合は空の synthetic assistant message done を1つ配信
- * 4. 最後に response.completed を必ず1つ送る
+ * codex-rs/codex-api/src/sse/responses.rs の公式実装および
+ * codex-rs/core/tests/common/responses.rs テストヘルパ(ev_function_call/ev_assistant_message)に基づく:
+ *   - output_item.done 単体で item 全体(name/call_id/arguments 等)を配信すればよい
+ *   - function_call_arguments.delta/done, custom_tool_call_input.delta/done は codex CLI が無視するため不要
+ *   - 空テキストメッセージの done を送ると codex CLI が「テキスト応答完了」と誤認するため、function_call のみターンでは送らない
  *
- * @param finalResponse - backend から受領した最終 canonical response(OpenAI 形式へ変換済み)
- * @param streamedText  - ストリーミング中に累積した visible text(delta 配信済み)。無ければ finalResponse.output から抽出
- * @param itemId        - 先頭メッセージ item id(streaming 開始時に決定した streamItemId)
- * @returns クライアントへ送る SSE events
+ * completed ペイロードは finalResponse 全体(id/status/model/output/usage 含む)
  */
+export type BuildStreamingEventsOptions = {
+  // ストリーミング中に output_item.done で配信済みの reasoning を
+  // response.completed ペイロードで重複配信しないために除外するフラグ
+  streamedReasoning?: boolean;
+};
+
 export const buildStreamingEvents = (
   finalResponse: OpenAIResponse,
   streamedText: string,
   itemId: string,
+  options?: BuildStreamingEventsOptions,
 ): SseEvent[] => {
   const events: SseEvent[] = [];
+  const streamedReasoning = options?.streamedReasoning ?? false;
 
-  const firstOutput = finalResponse.output.find(
+  const firstMessage = finalResponse.output.find(
     (item: Record<string, unknown>) => item.type === 'message',
   );
   const finalAssistantText =
     streamedText || getAssistantTextFromResponse(finalResponse);
 
+  // ストリーミング中に配信済みの message output_text.done -> content_part.done -> output_item.done で閉じる
   if (finalAssistantText) {
     events.push(
       {
@@ -77,8 +83,8 @@ export const buildStreamingEvents = (
           type: 'response.output_item.done',
           output_index: 0,
           item:
-            firstOutput && firstOutput.type === 'message'
-              ? firstOutput
+            firstMessage && firstMessage.type === 'message'
+              ? firstMessage
               : {
                   ...createSyntheticAssistantMessageOutput(finalAssistantText),
                   id: itemId,
@@ -88,32 +94,34 @@ export const buildStreamingEvents = (
     );
   }
 
-  // text 以外の output item(reasoning/function_call/custom_tool_call/mcp_call 等)を配信。
-  // 出力 index は既に先頭 message 用に1使っている可能性があるため offset 補正する
+  // 非 message アイテム(function_call/reasoning/custom_tool_call/mcp_call/web_search_call 等)を配信。
+  // codex CLI 公式形式(output_item.done 単体で item 全体配信)へ従う。delta/done 系サブイベントは不要
   const nonMessageOutputs = finalResponse.output.filter(
-    (output) => !(finalAssistantText && output.type === 'message'),
+    (output) => {
+      if (finalAssistantText && output.type === 'message') return false;
+      // ストリーミング中に配信済みの reasoning は除外(重複配信防止)
+      if (streamedReasoning && (output as Record<string, unknown>).type === 'reasoning') return false;
+      return true;
+    }
   );
 
+  // streamedReasoning の分も index を進める。reasoning 配信済みなら +1、
+  // message text 配信済みならさらに +1 で後続 item の output_index が整合する
+  const startIndex =
+    (finalAssistantText ? 1 : 0) + (streamedReasoning ? 1 : 0);
+
   for (let i = 0; i < nonMessageOutputs.length; i++) {
-    const outputIndex = i + (finalAssistantText ? 1 : 0);
-    events.push(
-      {
-        event: 'response.output_item.added',
-        data: {
-          type: 'response.output_item.added',
-          output_index: outputIndex,
-          item: nonMessageOutputs[i],
-        },
+    const item = nonMessageOutputs[i];
+    if (!item) continue;
+
+    events.push({
+      event: 'response.output_item.done',
+      data: {
+        type: 'response.output_item.done',
+        output_index: startIndex + i,
+        item,
       },
-      {
-        event: 'response.output_item.done',
-        data: {
-          type: 'response.output_item.done',
-          output_index: outputIndex,
-          item: nonMessageOutputs[i],
-        },
-      },
-    );
+    });
   }
 
   // 完全空応答でも最低1つの done item を要求するクライアントがあるため補完する
@@ -128,7 +136,7 @@ export const buildStreamingEvents = (
     });
   }
 
-  // 必ず最後に completed を送り、client 側で終端判定可能にする
+  // 必ず最後に completed を送る
   events.push({
     event: 'response.completed',
     data: {

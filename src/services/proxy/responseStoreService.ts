@@ -6,6 +6,8 @@ import { HttpError } from '@/types/errors';
 
 type StoredResponseRecord = {
   request: CreateResponseRequest;
+  // 元リクエスト受領時の tools 配列(生形状)。previous_response_id 経由で incremental items のみ送られてきた場合の復元用。namespace 形状や builtin 生定義を含む
+  toolsRaw: unknown[];
   inputItems: unknown[];
   outputItems: unknown[];
   response: OpenAIResponse;
@@ -66,6 +68,8 @@ class ResponseStoreService {
     const record = this.getOrThrow(responseId);
 
     return {
+      // 前回リクエストの tools 配列(namespace/builtin 生形状含む)。previous_response_id 経由で来た場合の復元用
+      previousToolsRaw: record.toolsRaw,
       previousInputItems: record.inputItems,
       previousOutputItems: record.outputItems,
     };

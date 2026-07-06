@@ -44,6 +44,12 @@ export const ChatCompletionRequestSchema = z
     tool_choice: z.unknown().optional(),
     parallel_tool_calls: z.boolean().optional(),
     stream: z.boolean().optional(),
+    // litellm 等の上流でストリーミング時 usage を取得するために必要。
+    // 未指定だと上流が usage チャンクを返さず response.completed で usage が欠落する
+    stream_options: z
+      .object({ include_usage: z.boolean().optional() })
+      .passthrough()
+      .optional(),
     temperature: z.number().optional(),
     top_p: z.number().optional(),
     max_tokens: z.number().int().positive().optional(),

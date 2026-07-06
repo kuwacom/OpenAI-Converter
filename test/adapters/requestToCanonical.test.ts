@@ -146,11 +146,11 @@ describe('request-to-canonical adapter namespace tools', () => {
     expect(top.name).toBe('top_level');
     expect(top.wireName).toBe('top_level');
     expect(top.parentNamespace).toBeUndefined();
-    // namespace 子は wireName=`${ns}-${childName}` 形式(codex-relay 慣習に準拠)
+    // namespace 子は wireName=`${ns}${childName}` 形式(codex mcp__server__tool 慣習に準拠)
     const childA = canonical.tools[1];
     if (!childA) { throw new Error('missing childA'); }
     expect(childA.name).toBe('_add_comment_to_issue');
-    expect(childA.wireName).toBe('mcp__codex_apps__github-_add_comment_to_issue');
+    expect(childA.wireName).toBe('mcp__codex_apps__github_add_comment_to_issue');
     expect(childA.parentNamespace).toBe('mcp__codex_apps__github');
     // 子自体の parameters/strict は子の型宣言優先で保持される
     expect(childA.strict).toBe(false);
@@ -161,7 +161,7 @@ describe('request-to-canonical adapter namespace tools', () => {
     const childB = canonical.tools[2];
     if (!childB) { throw new Error('missing childB'); }
     expect(childB.name).toBe('_close_issue');
-    expect(childB.wireName).toBe('mcp__codex_apps__github-_close_issue');
+    expect(childB.wireName).toBe('mcp__codex_apps__github_close_issue');
   });
 
   it('restores namespace field when emitting function_call via canonicalToResponse', () => {

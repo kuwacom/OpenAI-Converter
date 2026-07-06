@@ -72,8 +72,9 @@ export const createResponse = async (
     const abortController = new AbortController();
     const inProgressResponse = createInProgressOpenAIResponse(canonicalRequest);
 
-    responseStore.save({
-      request,
+   responseStore.save({
+     request,
+      toolsRaw: request.tools ?? [],
       inputItems: currentInputItems,
       outputItems: [],
       response: inProgressResponse,
@@ -98,6 +99,7 @@ export const createResponse = async (
           canonicalRequest,
           canonicalResponse,
         );
+
         responseStore.updateResponse(canonicalRequest.id, finalResponse);
       } catch (error) {
         if (abortController.signal.aborted) {
@@ -127,8 +129,9 @@ export const createResponse = async (
   );
   const finalResponse = toOpenAIResponse(canonicalRequest, canonicalResponse);
 
-  responseStore.save({
-    request,
+ responseStore.save({
+   request,
+    toolsRaw: request.tools ?? [],
     inputItems: currentInputItems,
     outputItems: finalResponse.output,
     response: finalResponse,
@@ -151,6 +154,7 @@ export const createStreamingResponse = async (
 
   responseStore.save({
     request,
+    toolsRaw: request.tools ?? [],
     inputItems: currentInputItems,
     outputItems: [],
     response: inProgressResponse,
@@ -164,53 +168,30 @@ export const createStreamingResponse = async (
       })
     : undefined;
 
+  // codex-relay stream.rs 準拠のストリーミング実装:
+  //   - response.created のみ送り、事前 output_item.added/content_part.added は送らない
+  //   - reasoning delta 初回時 → output_item.added(reasoning) + reasoning_summary_text.delta 配信
+  //   - text delta 初回時 → output_item.added(message) + content_part.added + output_text.delta 配信
+  //   - 全 delta 完了後 → output_item.done(reasoning) + buildStreamingEvents(function_call等) + response.completed
+  //   空メッセージ未完了アイテム残留防止のため、delta が来た時のみ動的に added を送る
   const readable = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
       let accumulatedText = '';
+      let accumulatedReasoning = '';
+      const reasoningItemId = `rs_${createMessageId()}`;
+      let reasoningOutputIndex: number | null = null;
+      let messageOutputIndex: number | null = null;
+      const outputIndexCounter = { next: 0 };
 
       controller.enqueue(
         encoder.encode(
           sseEncode('response.created', {
             type: 'response.created',
-            response: inProgressResponse,
-          }),
-        ),
-      );
-      controller.enqueue(
-        encoder.encode(
-          sseEncode('response.in_progress', {
-            type: 'response.in_progress',
-            response: inProgressResponse,
-          }),
-        ),
-      );
-      controller.enqueue(
-        encoder.encode(
-          sseEncode('response.output_item.added', {
-            type: 'response.output_item.added',
-            output_index: 0,
-            item: {
-              id: streamItemId,
-              type: 'message',
+            response: {
+              id: canonicalRequest.id,
               status: 'in_progress',
-              role: 'assistant',
-              content: [],
-            },
-          }),
-        ),
-      );
-      controller.enqueue(
-        encoder.encode(
-          sseEncode('response.content_part.added', {
-            type: 'response.content_part.added',
-            item_id: streamItemId,
-            output_index: 0,
-            content_index: 0,
-            part: {
-              type: 'output_text',
-              text: '',
-              annotations: [],
+              model: canonicalRequest.model,
             },
           }),
         ),
@@ -219,8 +200,73 @@ export const createStreamingResponse = async (
       try {
         if (streamResult) {
           for await (const delta of streamResult.deltas) {
+            if (delta.reasoningDelta) {
+              if (reasoningOutputIndex === null) {
+                reasoningOutputIndex = outputIndexCounter.next++;
+                controller.enqueue(
+                  encoder.encode(
+                    sseEncode('response.output_item.added', {
+                      type: 'response.output_item.added',
+                      output_index: reasoningOutputIndex,
+                      item: {
+                        type: 'reasoning',
+                        id: reasoningItemId,
+                        summary: [{ type: 'summary_text', text: '' }],
+                      },
+                    }),
+                  ),
+                );
+              }
+              accumulatedReasoning += delta.reasoningDelta;
+              controller.enqueue(
+                encoder.encode(
+                  sseEncode('response.reasoning_summary_text.delta', {
+                    type: 'response.reasoning_summary_text.delta',
+                    item_id: reasoningItemId,
+                    output_index: reasoningOutputIndex,
+                    summary_index: 0,
+                    delta: delta.reasoningDelta,
+                  }),
+                ),
+              );
+            }
+
             if (!delta.textDelta) {
               continue;
+            }
+
+            if (messageOutputIndex === null) {
+              messageOutputIndex = outputIndexCounter.next++;
+              controller.enqueue(
+                encoder.encode(
+                  sseEncode('response.output_item.added', {
+                    type: 'response.output_item.added',
+                    output_index: messageOutputIndex,
+                    item: {
+                      id: streamItemId,
+                      type: 'message',
+                      status: 'in_progress',
+                      role: 'assistant',
+                      content: [],
+                    },
+                  }),
+                ),
+              );
+              controller.enqueue(
+                encoder.encode(
+                  sseEncode('response.content_part.added', {
+                    type: 'response.content_part.added',
+                    item_id: streamItemId,
+                    output_index: messageOutputIndex,
+                    content_index: 0,
+                    part: {
+                      type: 'output_text',
+                      text: '',
+                      annotations: [],
+                    },
+                  }),
+                ),
+              );
             }
 
             accumulatedText += delta.textDelta;
@@ -229,7 +275,7 @@ export const createStreamingResponse = async (
                 sseEncode('response.output_text.delta', {
                   type: 'response.output_text.delta',
                   item_id: streamItemId,
-                  output_index: 0,
+                  output_index: messageOutputIndex!,
                   content_index: 0,
                   delta: delta.textDelta,
                 }),
@@ -248,6 +294,7 @@ export const createStreamingResponse = async (
           canonicalRequest,
           canonicalResponse,
         );
+
         const firstMessageIndex = finalResponse.output.findIndex(
           (output: Record<string, unknown>) => output.type === 'message',
         );
@@ -263,12 +310,32 @@ export const createStreamingResponse = async (
           }
         }
 
+        // codex-relay 準拠: ストリーム中に蓄積した reasoning があれば output_item.done(reasoning) を先に送信
+        if (accumulatedReasoning && reasoningOutputIndex !== null) {
+          controller.enqueue(
+            encoder.encode(
+              sseEncode('response.output_item.done', {
+                type: 'response.output_item.done',
+                output_index: reasoningOutputIndex,
+                item: {
+                  type: 'reasoning',
+                  id: reasoningItemId,
+                  summary: [
+                    { type: 'summary_text', text: accumulatedReasoning },
+                  ],
+                },
+              }),
+            ),
+          );
+        }
+
         responseStore.updateResponse(canonicalRequest.id, finalResponse);
 
         for (const event of buildStreamingEvents(
           finalResponse,
           accumulatedText,
           streamItemId,
+          { streamedReasoning: !!accumulatedReasoning && reasoningOutputIndex !== null },
         )) {
           controller.enqueue(
             encoder.encode(sseEncode(event.event, event.data)),
@@ -277,9 +344,6 @@ export const createStreamingResponse = async (
 
         controller.close();
       } catch (error) {
-        // クライアント切断等で abortController.abort() 後の AbortError は正常系。
-        // 失敗レスポンスを送ろうとしても controller は既に閉じている可能性が高く、
-        // 強引に送ると再例外でプロセス全体を巻き込むため、AbortError 時は黙って終える
         const isAborted =
           abortController.signal.aborted ||
           (error instanceof Error && error.name === 'AbortError');
@@ -342,4 +406,3 @@ export const getResponseInputItems = async (responseId: string) => {
     has_more: false,
   };
 };
-

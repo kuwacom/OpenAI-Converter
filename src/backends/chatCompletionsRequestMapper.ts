@@ -1,10 +1,12 @@
 import type { CanonicalRequest } from '@/models/canonical/response';
 import type { CanonicalMessage } from '@/models/canonical/message';
 import type { CanonicalTool } from '@/models/canonical/tool';
+import { safeJsonParse } from '@/lib/jsonUtils';
 import type {
   ChatCompletionMessage,
   ChatCompletionRequest,
 } from '@/models/chatCompletionsModel';
+import logger from '@/services/logger';
 
 // 上流へ転送する関数ツールの JSON Schema 形状。
 // 標準的な OpenAI ツール形式のまま渡すことで、upstream 側 function calling を最大限活用する
@@ -21,7 +23,7 @@ const buildUpstreamFunctionTool = (
 });
 
 // custom/mcp/builtin 等、OpenAI 関数ツールに直接詰められない種別は
-// 単一文字列入力を受け取る関数ラッパーとして上流へ提示する。
+// 単一文字列入力または種別別 JSON 入力を受け取る関数ラッパーとして上流へ提示する。
 // 復号結果は応答側で元の canonical 形式へ再構築する(response-mapper 参照)
 const buildSyntheticFunctionWrapper = (
   tool: CanonicalTool,
@@ -32,18 +34,81 @@ const buildSyntheticFunctionWrapper = (
     description:
       tool.description ??
       `${tool.originalType ?? tool.type} routed through proxy`,
-    parameters: {
-      type: 'object',
-      properties: {
-        input: {
-          type: 'string',
-          description: `Freeform payload for ${tool.wireName}`,
-        },
-      },
-      required: ['input'],
-    },
+    parameters: buildSyntheticWrapperParameters(tool),
   },
 });
+
+/**
+ * ### buildSyntheticWrapperParameters
+ * 合成関数ラッパーの引数 JSON Schema を builtin 種別に応じて生成する。
+ *
+ * - web_search: 既存 injectWebSearchContext 側で専用定義を追加済みのためここでは generic 単一 input 文字列を採用(action/query/url を文字列化 JSON で受け取る)
+ * - tool_search: execution(検索実行方法) + query(検索語) + tools(候補配列) を緩く受領
+ * - local_shell: action オブジェクト(command/env/cwd 等)を受領(codex LocalShellAction 準拠)
+ * - image_generation: prompt + output_format(none/png 等可选) を受領
+ * - 上記以外(custom/mcp/unknown): 単一 input 文字列(従来通り)
+ */
+const buildSyntheticWrapperParameters = (
+  tool: CanonicalTool,
+): Record<string, unknown> => {
+  // リクエスト由来 parameters があればそれを優先(web_search search_context_size 等のメタ保持のため)
+  const baseParams =
+    (tool.parameters as Record<string, unknown> | undefined) ?? undefined;
+
+  if (tool.builtinKind === 'tool_search') {
+    return baseParams ?? {
+      type: 'object',
+      properties: {
+        execution: { type: 'string', description: 'Tool discovery execution mode. Defaults to "search".' },
+        query: { type: 'string', description: 'Search query text used to find matching deferred tool definitions.' },
+      },
+      required: ['query'],
+    };
+  }
+
+  if (tool.builtinKind === 'local_shell') {
+    return baseParams ?? {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'object',
+          description: 'Shell action to execute (command, env, cwd, etc).',
+          properties: {
+            command: { type: 'array', items: { type: 'string' } },
+            env: { type: 'object' },
+            working_dir: { type: 'string' },
+          },
+          required: ['command'],
+        },
+      },
+      required: ['action'],
+    };
+  }
+
+  if (tool.builtinKind === 'image_generation') {
+    return baseParams ?? {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Image generation prompt text.' },
+        output_format: { type: 'string', enum: ['png', 'webp'], description: 'Output image format.' },
+      },
+      required: ['prompt'],
+    };
+  }
+
+  // web_search / custom / mcp / unknown は従来通り単一入力文字列ラッパー。
+  // web_search は既存 injectWebSearchContext が合成関数を追加して action/query/url を明示 Schema 定義しているため、ここでの到達は二重定義防止観点から generic 化する
+  return baseParams ?? {
+    type: 'object',
+    properties: {
+      input: {
+        type: 'string',
+        description: `Freeform payload for ${tool.wireName}`,
+      },
+    },
+    required: ['input'],
+  };
+};
 
 /**
  * ### buildChatCompletionTools
@@ -78,6 +143,36 @@ const safeStringify = (value: unknown): string => {
   }
 };
 
+/**
+ * ### ensureValidWireArguments
+ * 関数ツールの引数文字列を上流 ChatCompletions が受理できる valid JSON へ保証する。
+ *
+ * 一度でも上流モデルが不正な JSON 引数を出力すると、それが Codex 履歴(responseStore 含む)へ残り、
+ * 以降の resume 再開ですべて再送され永続的に 400 で拒否され続ける致命バグを防ぐための最終防波堤。
+ * 情報落ちを防ぐため、壊れた生テキストは破棄せず {_malformedArguments:"..."} 形式へ包んで valid JSON 化する
+ *
+ * @param argsSource - 整形対象の候補文字列(rawArguments 優先、無ければ arguments 文字列)
+ * @param toolName - ログ識別用のツール名
+ * @returns 上流が JSON parse 可能なことが保証された arguments 文字列
+ */
+const ensureValidWireArguments = (
+  argsSource: string,
+  toolName: string,
+): string => {
+  // 空文字列は strict プロバイダが空 arguments を拒否することがあるため空オブジェクトへ正規化する
+  if (argsSource.length === 0) return '{}';
+
+  // 既に valid JSON なら多重エンコード防止のため構造を保ったまま素通しする
+  if (safeJsonParse(argsSource) !== undefined) return argsSource;
+
+  // 不正 JSON の場合、内容を捨てず包んで valid JSON 化する
+  logger.warn(
+    'Encountered malformed tool_call.arguments; wrapping to preserve content for upstream',
+    { toolName, rawLength: argsSource.length },
+  );
+  return safeStringify({ _malformedArguments: argsSource });
+};
+
 // Custom(Freeform) ツール用 arguments を上流 CC の期待形態(JSON 文字列)へ整える。
 // apply_patch 等の素テキスト入力は {input:<raw>} 形式に再エンコードしないと
 // upstream が function.arguments を JSON parse できず 400 を返すため
@@ -98,7 +193,16 @@ const toWireFunctionArguments = (call: {
   if (isCustom) {
     return safeStringify({ input: argsSource });
   }
-  return call.rawArguments ?? safeStringify(call.arguments ?? {});
+  // custom 系以外は候補(rawArguments 優先、無ければ arguments 文字列)を valid JSON へ保証する。
+  // responseStore や Codex 履歴由来の過去ターン tool_call 引数が一度でも壊れると、以降再送時に永続的に 400 になるため
+  // rawArguments 未所持時のみ arguments(object 含む)を JSON 文字列化した候補を使用する
+  const candidate =
+    typeof call.rawArguments === 'string'
+      ? call.rawArguments
+      : typeof call.arguments === 'string'
+        ? (call.arguments as string)
+        : safeStringify(call.arguments ?? {});
+  return ensureValidWireArguments(candidate, call.wireName || call.name);
 };
 
 // content_part 配列を ChatCompletions 用 content へ変換する
@@ -309,7 +413,57 @@ const mapResponseFormat = (
   if (!format || typeof format !== 'object' || Array.isArray(format)) {
     return undefined;
   }
-  return format as Record<string, unknown>;
+  return toChatCompletionsResponseFormat(format as Record<string, unknown>);
+};
+
+/**
+ * ### toChatCompletionsResponseFormat
+ * Responses API 形式の text.format を Chat Completions 形式 response_format へ変換する。
+ *
+ * 両 API で形状が異なる:
+ * - Responses:       { type:"json_schema", name, schema, strict } (フラット)
+ * - ChatCompletions: { type:"json_schema", json_schema: { name, schema, strict } } (ネスト)
+ *
+ * フラットのまま流すと上流(litellm/NIM 等)の response_format.json_schema 必須フィールドデシリアライザで 400 を返すため正規化必須。
+ * type=json_object / text 等その他形状はそのまま通す(上流互換のため)
+ */
+const toChatCompletionsResponseFormat = (
+  format: Record<string, unknown>,
+): Record<string, unknown> => {
+  if (typeof format.type !== 'string') return format;
+
+  // json_schema 形状のみネスト化必須。それ以外はそのまま通す
+  if (format.type !== 'json_schema') return format;
+
+  // 既に json_schema ネスト形式なら二重ラップ回避
+  if (
+    typeof format.json_schema === 'object' &&
+    format.json_schema !== null &&
+    !Array.isArray(format.json_schema)
+  ) {
+    return format;
+  }
+
+ // Responses のフラット name/schema/strict を CC ネスト形式 json_schema 配下へ移動する
+  const { type: _type, ...rest } = format;
+  void _type;
+  // codex VSCode 拡張等は Responses API 経由で schema を JSON 文字列として送ってくるケースがある。
+  // SGLang 等 strict 上流は response_format.json_schema.schema を辞書型必須とし文字列を拒否するため、
+  // 文字列受領時は safeJsonParse 相当でオブジェクトへ復元する(失敗時はそのまま通す)
+  return { type: 'json_schema', json_schema: normalizeSchemaField(rest) };
+};
+
+/**
+ * ### normalizeSchemaField
+ * json_schema 配下 rest オブジェクト内 schema フィールドが JSON 文字列の場合、
+ * オブジェクトへ復元する。SGLang 等 strict 上流の dict_type バリデーション回避用。
+ * 失敗時や文字列以外の場合はそのまま返す(上流エラー任せ)
+ */
+const normalizeSchemaField = (rest: Record<string, unknown>): Record<string, unknown> => {
+  if (typeof rest.schema !== 'string') return rest;
+  const parsed = safeJsonParse<Record<string, unknown>>(rest.schema);
+  if (!parsed || typeof parsed !== 'object') return rest;
+  return { ...rest, schema: parsed };
 };
 
 export type ChatCompletionRequestMapping = ReturnType<

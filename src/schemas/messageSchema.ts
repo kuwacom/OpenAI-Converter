@@ -13,6 +13,7 @@ export const CanonicalToolCallSchema = z.object({
   arguments: z.unknown().optional(),
   rawArguments: z.string().optional(),
   originalType: z.string().optional(),
+  builtinKind: z.enum(['web_search','tool_search','local_shell','image_generation']).optional(),
   status: z.string().default('completed'),
   raw: z.unknown().optional(),
 });

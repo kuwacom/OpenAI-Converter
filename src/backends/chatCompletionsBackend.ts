@@ -238,8 +238,13 @@ export const streamChatCompletions = async (
     base.model,
   );
   const upstreamResponse = await createChatCompletion({
-    baseUrl: base.baseUrl,
-    body: { ...mapping.request, stream: true },
+   baseUrl: base.baseUrl,
+   body: {
+     ...mapping.request,
+     stream_options: { include_usage: true },
+   },
+    // litellm 等の上流でストリーミング時 usage を返させるために必須。
+    // 未指定だと上流が usage チャンクを返さず response.completed で usage が null になる
     signal: base.signal,
     apiKey: base.apiKey,
   });
@@ -265,7 +270,14 @@ export const streamChatCompletions = async (
         const rawContent = chunk.choices[0]?.delta?.content;
         if (typeof rawContent === 'string' && rawContent.length > 0) {
           yield { textDelta: rawContent };
-       }
+        }
+
+        // 思考モデルの推論テキストもクライアントへ delta 配信(codex-relay stream.rs 準拠)。
+        // reasoning_content 未配信だと GLM 等で長時間アイドル発生→Codex 側 idle timeout で停止する
+        const rawReasoning = chunk.choices[0]?.delta?.reasoning_content ?? chunk.choices[0]?.delta?.reasoning;
+        if (typeof rawReasoning === 'string' && rawReasoning.length > 0) {
+          yield { reasoningDelta: rawReasoning };
+        }
     }
   const initialSynthesized = synthesizeCanonicalResponseOutputs(
     mapChatCompletionToCanonicalResponse(effectiveRequest, mapping, aggregate),
@@ -307,14 +319,14 @@ export const openAICompatibleChatCompletionsBackend: BackendAdapter = {
   id: 'openai-compatible-chat-completions',
   provider: 'openai-compatible',
   wireApi: 'chat-completions',
-  execute: async (request, ctx) =>
+  execute: async (request, ctx, options) =>
     executeChatCompletionsBlocking(request, {
       baseUrl: ctx.config.upstreamBaseUrl,
       model: ctx.config.upstreamModel || undefined,
       apiKey: ctx.config.upstreamApiKey || undefined,
       signal: ctx.signal,
       webSearchConfig: ctx.config.webSearch,
-    }),
+    }, options),
   stream: async (request, ctx) =>
     streamChatCompletions(request, {
       baseUrl: ctx.config.upstreamBaseUrl,

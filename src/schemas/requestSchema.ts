@@ -11,6 +11,8 @@ export const CanonicalRequestSchema = z.object({
   instructions: z.string().optional(),
   messages: z.array(CanonicalMessageSchema),
   tools: z.array(CanonicalToolSchema),
+  // フラット化前の元リクエスト tools 配列(namespace/builtin 生形状)。canonicalToResponse で応答の tools 配列をエコーバックする際、フラット化子単独ではなく元形状を保つために使用
+  originalToolsRaw: z.array(z.unknown()).default([]),
   toolChoice: CanonicalToolChoiceSchema.optional(),
   parallelToolCalls: z.boolean().default(true),
   reasoning: z

@@ -11,6 +11,8 @@ export type BackendExecutionContext = {
 
 export type BackendStreamDelta = {
   textDelta?: string;
+  // 思考モデルの推論テキスト差分(GLM reasoning_content 等)。codex-relay は response.reasoning_summary_text.delta へ配信
+  reasoningDelta?: string;
 };
 
 export type BackendExecuteOptions = {

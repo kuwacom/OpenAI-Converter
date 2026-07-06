@@ -5,7 +5,7 @@ import type {
 } from '@/models/canonical/response';
 import type { OpenAIResponse } from '@/models/responsesModel';
 import { createMessageId } from '@/lib/ids';
-import { toJsonString } from '@/lib/jsonUtils';
+import { safeJsonParse, toJsonString } from '@/lib/jsonUtils';
 
 const toUsage = (response: CanonicalResponse) => {
   if (!response.usage) {
@@ -14,16 +14,13 @@ const toUsage = (response: CanonicalResponse) => {
 
   return {
     input_tokens: response.usage.inputTokens ?? 0,
-    input_tokens_details: {
-      cached_tokens: 0,
-    },
     output_tokens: response.usage.outputTokens ?? 0,
-    output_tokens_details: {
-      reasoning_tokens: response.usage.reasoningTokens ?? 0,
-    },
     total_tokens:
       response.usage.totalTokens ??
       (response.usage.inputTokens ?? 0) + (response.usage.outputTokens ?? 0),
+    ...(response.usage.reasoningTokens
+      ? { output_tokens_details: { reasoning_tokens: response.usage.reasoningTokens } }
+      : {}),
   };
 };
 
@@ -40,8 +37,6 @@ const toMessageOutputItem = (
         {
           type: 'output_text',
           text: part.text,
-          // web_search 利用時にパートへ付与された url_citation 注釈をそのまま反映する。
-          // OpenAI 本家同様 output_text content へ紐づく形式とし Codex CLI 引用リンク表示に供する
           annotations: part.annotations ?? [],
         },
       ];
@@ -61,12 +56,9 @@ const toMessageOutputItem = (
   }),
 });
 
-
 /**
  * ### toWebSearchCallOutputItem
- * CanonicalOutputWebSearchCall を OpenAI Responses 形式 web_search_call アイテムへ変換する。
- * 公式仕様準拠形状: {id, type:"web_search_call", status, action?}。
- * Codex 本体はこれを non-tool 扱いで TurnItem::WebSearch へマッピングする(UI 上「Searched」表示に使用)
+ * web_search_call アイテムへ変換。Codex 本体は non-tool 扱いで TurnItem::WebSearch へマップする
  */
 const toWebSearchCallOutputItem = (
   output: Extract<CanonicalResponseOutput, { kind: 'web_search_call' }>,
@@ -76,14 +68,14 @@ const toWebSearchCallOutputItem = (
   status: output.status,
   ...(output.action ? { action: output.action } : {}),
 });
+
 const toToolCallOutputItem = (
   output: Extract<CanonicalResponseOutput, { kind: 'tool_call' }>,
 ) => {
   const toolCall = output.toolCall;
 
   if (toolCall.type === 'function') {
-    // 名前空間(namespace)の子関数として展開されていた場合、Responses 形式へ namespace フィールドを復元する。
-    // codex-relay 実測慣習に準拠し、type=function_call のまま name=子単独名 + namespace=親名前空間名 を付与する往復形とする
+    // namespace 子関数は name=子単独名 + namespace=親名前空間名 の往復形(codex-relay 慣習)
     const fnBase = {
       id: output.id,
       type: 'function_call' as const,
@@ -99,8 +91,7 @@ const toToolCallOutputItem = (
   }
 
   if (toolCall.type === 'custom') {
-    // arguments は custom ツールの場合、素のテキスト(apply_patch なら "*** Begin Patch ...")を保持している前提。
-    // 万が一オブジェクト化されていたら toJSONString 化せずテキスト成分のみを取り出す。
+    // custom ツール(apply_patch 等)の引数は素テキスト。JSON ラップ解除必須
     const argsIsString = typeof toolCall.arguments === 'string';
     return {
       id: output.id,
@@ -128,6 +119,53 @@ const toToolCallOutputItem = (
     };
   }
 
+  // builtin 合成関数経由呼出。builtinKind 別 *_call 形式 non-tool アイテム(Codex TUI 表示整合用 stub)
+  const argsStr =
+    typeof toolCall.rawArguments === 'string'
+      ? toolCall.rawArguments
+      : toJsonString(toolCall.arguments ?? {}, '{}');
+
+  if (toolCall.builtinKind === 'tool_search') {
+    const parsedArgs = safeJsonParse<Record<string, unknown>>(argsStr) ?? {};
+    return {
+      id: output.id,
+      type: 'tool_search_call',
+      call_id: toolCall.callId,
+      status: output.status,
+      execution:
+        typeof parsedArgs.execution === 'string' ? parsedArgs.execution : 'search',
+      arguments: parsedArgs,
+    };
+  }
+
+  if (toolCall.builtinKind === 'local_shell') {
+    const parsedArgs = safeJsonParse<Record<string, unknown>>(argsStr) ?? {};
+    return {
+      id: output.id,
+      type: 'local_shell_call',
+      call_id: toolCall.callId,
+      status: output.status,
+      action:
+        (parsedArgs.action as Record<string, unknown> | undefined) ?? null,
+    };
+  }
+
+  if (toolCall.builtinKind === 'image_generation') {
+    const parsedArgs = safeJsonParse<Record<string, unknown>>(argsStr) ?? {};
+    return {
+      id: output.id,
+      type: 'image_generation_call',
+      status: output.status,
+      revised_prompt:
+        typeof parsedArgs.prompt === 'string' ? parsedArgs.prompt : undefined,
+      result:
+        typeof parsedArgs.output_format === 'string'
+          ? 'image_generation is not supported by this proxy'
+          : '',
+    };
+  }
+
+  // generic フォールバック
   const itemType = toolCall.originalType?.endsWith('_call')
     ? toolCall.originalType
     : `${toolCall.originalType ?? toolCall.name}_call`;
@@ -170,105 +208,63 @@ const toOutputItem = (
     return toToolCallOutputItem(output);
   }
 
-  // web_search_call は non-tool 出力アイテム。Codex 本体はこれを TurnItem::WebSearch へマッピングする
   if (output.kind === 'web_search_call') {
     return toWebSearchCallOutputItem(output);
   }
 
   return toReasoningOutputItem(output);
 };
-// 各 to* 関数の戻り値は OpenAI Responses wire 形状の出力アイテム。
-// toOutputItem が返す union を OpenAIResponse['output'][number] へ明示することで、
-// 呼び出し側(toOpenAIResponse 内 .map)の型安全性を担保する
 
+/**
+ * ### createInProgressOpenAIResponse
+ * ストリーミング開始時 response.created ペイロード。
+ *
+ * codex-relay 実測仕様に準拠し極小化:{id, object:"response", status:"in_progress", model} のみ送る。
+ * Codex クライアントはここから前回状態再利用しないため、余分メタデータは逆に誤動作を招く
+ */
 export const createInProgressOpenAIResponse = (
   request: CanonicalRequest,
 ): OpenAIResponse => ({
   id: request.id,
   object: 'response',
-  created_at: Math.floor(Date.now() / 1000),
   status: 'in_progress',
-  background: request.background,
-  error: null,
-  incomplete_details: null,
-  instructions: request.instructions ?? null,
-  max_output_tokens: request.maxOutputTokens ?? null,
-  max_tool_calls: request.maxToolCalls ?? null,
   model: request.model,
-  output: [],
-  parallel_tool_calls: request.parallelToolCalls,
-  previous_response_id: request.previousResponseId ?? null,
-  reasoning: {
-    effort: request.reasoning?.effort ?? null,
-    summary: request.reasoning?.summary ?? null,
-  },
-  service_tier: request.serviceTier,
-  store: request.store,
-  temperature: request.temperature ?? null,
-  text: request.text ?? {
-    format: {
-      type: 'text',
-    },
-  },
-  tool_choice:
-    request.toolChoice ?? (request.tools.length > 0 ? 'auto' : 'none'),
-  tools: request.tools.map((tool) => tool.raw),
-  top_p: request.topP ?? null,
-  truncation: request.truncation,
-  usage: null,
-  user: null,
-  metadata: request.metadata,
-});
+}) as OpenAIResponse;
 
+/**
+ * ### toOpenAIResponse
+ * 最終応答を OpenAI Responses 形式へ変換。
+ *
+ * codex-relay ResponsesResponse 型通り、最小限 fields のみ出力する(id/object/model/output/usage)。
+ * 不要な tools/tool_choice/reasoning/text/instructions 等を含めると Codex VSCode 拡張が依存して破綻するため除去
+ */
 export const toOpenAIResponse = (
-  request: CanonicalRequest,
+  _request: CanonicalRequest,
   response: CanonicalResponse,
-): OpenAIResponse => ({
-  id: response.id,
-  object: 'response',
-  created_at: response.createdAt,
-  completed_at: response.completedAt,
-  status: response.status,
-  background: response.background ?? request.background,
-  error: response.error ?? null,
-  incomplete_details: response.incompleteDetails ?? null,
-  instructions: response.instructions ?? request.instructions ?? null,
-  max_output_tokens:
-    response.maxOutputTokens ?? request.maxOutputTokens ?? null,
-  max_tool_calls: response.maxToolCalls ?? request.maxToolCalls ?? null,
-  model: response.model,
-  output: response.output.map((output: CanonicalResponseOutput) =>
-    toOutputItem(output),
-  ),
-  parallel_tool_calls: response.parallelToolCalls,
-  previous_response_id:
-    response.previousResponseId ?? request.previousResponseId ?? null,
-  reasoning: {
-    effort: response.reasoning?.effort ?? request.reasoning?.effort ?? null,
-    summary: response.reasoning?.summary ?? request.reasoning?.summary ?? null,
-  },
-  service_tier: response.serviceTier ?? request.serviceTier,
-  store: response.store ?? request.store,
-  temperature: response.temperature ?? request.temperature ?? null,
-  text: request.text ?? {
-    format: {
-      type: 'text',
-    },
-  },
-  tool_choice:
-    response.toolChoice ??
-    request.toolChoice ??
-    (request.tools.length > 0 ? 'auto' : 'none'),
-  tools:
-    response.tools.length > 0
-      ? response.tools.map((tool) => tool.raw)
-      : request.tools.map((tool) => tool.raw),
-  top_p: response.topP ?? request.topP ?? null,
-  truncation: response.truncation,
-  usage: toUsage(response),
-  user: response.user ?? null,
-  metadata: response.metadata,
-});
+): OpenAIResponse =>
+  ({
+    id: response.id,
+    object: 'response',
+    model: response.model,
+    output: response.output.map((output: CanonicalResponseOutput) =>
+      toOutputItem(output),
+    ),
+    usage: toUsage(response),
+    // ストリーミングで completed_at 必要ケースのため補完可能。非stream時は未設定可(undefined)
+    ...(response.completedAt
+      ? { completed_at: response.completedAt }
+      : {}),
+    ...(response.status !== 'completed'
+      ? { status: response.status }
+      : {}),
+    // incomplete_details / error を応答失敗時のみ付与(codex-relay 同様に成功時省略)
+    ...(response.incompleteDetails
+      ? { incomplete_details: response.incompleteDetails }
+      : {}),
+    ...(response.error != null
+      ? { error: response.error }
+      : {}),
+  }) as OpenAIResponse;
 
 export const getAssistantTextFromResponse = (response: OpenAIResponse) => {
   const messageItem = response.output.find(
@@ -293,9 +289,10 @@ export const getAssistantTextFromResponse = (response: OpenAIResponse) => {
     .join('');
 };
 
+/** stream 中 message item 用 helper(空テキスト done 用) */
 export const createSyntheticAssistantMessageOutput = (text: string) => ({
   id: createMessageId(),
-  type: 'message',
+  type: 'message' as const,
   status: 'completed',
   role: 'assistant',
   content: [
@@ -306,4 +303,3 @@ export const createSyntheticAssistantMessageOutput = (text: string) => ({
     },
   ],
 });
-
