@@ -431,6 +431,61 @@ const normalizeMessageLikeItem = (
   };
 };
 
+// function_call_output / custom_tool_call_output / mcp_tool_call_output の
+// output フィールドを canonical content parts へ正規化する。
+// codex は output を文字列か content_items 配列(input_text/input_image)で送る。
+// 配列形式は画像を含む可能性があり、そのまま image part へ復元する
+const normalizeToolOutputContent = (
+  item: Record<string, unknown>,
+): CanonicalContentPart[] => {
+  const output = item.output;
+
+  if (typeof output === 'string') {
+    return [createTextPart(output)];
+  }
+
+  // 配列形式(content_items)の場合は各要素を復元する。画像含むマルチモーダル結果に対応
+  if (Array.isArray(output)) {
+    return output.flatMap((entry): CanonicalContentPart[] => {
+      const obj = asObject(entry);
+      if (!obj) return [createRawPart(entry)];
+
+      const t = typeof obj.type === 'string' ? obj.type : '';
+      if (t === 'input_text' || t === 'output_text' || t === 'text') {
+        return [
+          createTextPart(
+            typeof obj.text === 'string' ? obj.text : toJsonString(obj, ''),
+          ),
+        ];
+      }
+      if (t === 'input_image') {
+        return [
+          {
+            type: 'image',
+            imageUrl:
+              typeof obj.image_url === 'string' ? obj.image_url : undefined,
+            detail: typeof obj.detail === 'string' ? obj.detail : undefined,
+            raw: obj,
+          },
+        ];
+      }
+      return [createRawPart(obj)];
+    });
+  }
+
+  // CallToolResult(mcp_tool_call_output)等オブジェクト形式の場合は raw で保持
+  if (output !== undefined && output !== null) {
+    return [createRawPart(output)];
+  }
+
+  // content フィールドへのフォールバック(後方互換)
+  if (typeof item.content === 'string') {
+    return [createTextPart(item.content)];
+  }
+
+  return [createRawPart(item)];
+};
+
 const normalizeToolOutputItem = (
   item: Record<string, unknown>,
 ): CanonicalMessage => ({
@@ -442,14 +497,7 @@ const normalizeToolOutputItem = (
       : typeof item.tool_call_id === 'string'
         ? item.tool_call_id
         : createCallId(),
-  content:
-    typeof item.output === 'string'
-      ? [createTextPart(item.output)]
-      : item.output
-        ? [createRawPart(item.output)]
-        : typeof item.content === 'string'
-          ? [createTextPart(item.content)]
-          : [createRawPart(item)],
+  content: normalizeToolOutputContent(item),
   raw: item,
 });
 
@@ -484,12 +532,13 @@ const toCanonicalMessage = (
   }
 
   if (
-    objectItem.type === 'function_call_output' ||
-    objectItem.type === 'custom_tool_call_output' ||
-    objectItem.type === 'mcp_approval_response'
-  ) {
-    return [normalizeToolOutputItem(objectItem)];
-  }
+   objectItem.type === 'function_call_output' ||
+   objectItem.type === 'custom_tool_call_output' ||
+    objectItem.type === 'mcp_tool_call_output' ||
+   objectItem.type === 'mcp_approval_response'
+ ) {
+   return [normalizeToolOutputItem(objectItem)];
+ }
 
   if (objectItem.type === 'reasoning') {
     return [
