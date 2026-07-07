@@ -182,16 +182,20 @@ const toToolCallOutputItem = (
 
 const toReasoningOutputItem = (
   output: Extract<CanonicalResponseOutput, { kind: 'reasoning' }>,
+  isContentMode: boolean,
 ) => ({
   id: output.id,
   type: 'reasoning',
   status: output.status,
-  summary: [
-    {
-      type: 'summary_text',
-      text: output.text,
-    },
-  ],
+  // reasoning.summary="none" 時は summary を空にし content へ格納する
+  ...(isContentMode
+    ? {
+        summary: [],
+        content: [{ type: 'reasoning_text', text: output.text }],
+      }
+    : {
+        summary: [{ type: 'summary_text', text: output.text }],
+      }),
   encrypted_content: output.encryptedContent ?? null,
 });
 
@@ -199,6 +203,7 @@ type OpenAIResponseOutputItem = OpenAIResponse['output'][number];
 
 const toOutputItem = (
   output: CanonicalResponseOutput,
+  isContentMode: boolean,
 ): OpenAIResponseOutputItem => {
   if (output.kind === 'message') {
     return toMessageOutputItem(output);
@@ -212,7 +217,7 @@ const toOutputItem = (
     return toWebSearchCallOutputItem(output);
   }
 
-  return toReasoningOutputItem(output);
+  return toReasoningOutputItem(output, isContentMode);
 };
 
 /**
@@ -239,15 +244,16 @@ export const createInProgressOpenAIResponse = (
  * 不要な tools/tool_choice/reasoning/text/instructions 等を含めると Codex VSCode 拡張が依存して破綻するため除去
  */
 export const toOpenAIResponse = (
-  _request: CanonicalRequest,
+  request: CanonicalRequest,
   response: CanonicalResponse,
-): OpenAIResponse =>
-  ({
+): OpenAIResponse => {
+  const isContentMode = request.reasoning?.summary === 'none';
+  return ({
     id: response.id,
     object: 'response',
     model: response.model,
     output: response.output.map((output: CanonicalResponseOutput) =>
-      toOutputItem(output),
+      toOutputItem(output, isContentMode),
     ),
     usage: toUsage(response),
     // ストリーミングで completed_at 必要ケースのため補完可能。非stream時は未設定可(undefined)
@@ -264,7 +270,9 @@ export const toOpenAIResponse = (
     ...(response.error != null
       ? { error: response.error }
       : {}),
-  }) as OpenAIResponse;
+ }) as OpenAIResponse;
+
+}
 
 export const getAssistantTextFromResponse = (response: OpenAIResponse) => {
   const messageItem = response.output.find(

@@ -165,11 +165,14 @@ export const createStreamingResponse = async (
     ? await backend.stream(canonicalRequest, {
         config,
         signal: abortController.signal,
-      })
-    : undefined;
+     })
+   : undefined;
 
-  // codex-relay stream.rs 準拠のストリーミング実装:
-  //   - response.created のみ送り、事前 output_item.added/content_part.added は送らない
+  // reasoning.summary="none" 時は codex は summary ではなく content delta を期待するため配信イベントを使い分ける
+  const isContentMode = canonicalRequest.reasoning?.summary === 'none';
+
+ // codex-relay stream.rs 準拠のストリーミング実装:
+ //   - response.created のみ送り、事前 output_item.added/content_part.added は送らない
   //   - reasoning delta 初回時 → output_item.added(reasoning) + reasoning_summary_text.delta 配信
   //   - text delta 初回時 → output_item.added(message) + content_part.added + output_text.delta 配信
   //   - 全 delta 完了後 → output_item.done(reasoning) + buildStreamingEvents(function_call等) + response.completed
@@ -210,25 +213,55 @@ export const createStreamingResponse = async (
                       output_index: reasoningOutputIndex,
                       item: {
                         type: 'reasoning',
-                        id: reasoningItemId,
-                        summary: [{ type: 'summary_text', text: '' }],
-                      },
+                       id: reasoningItemId,
+                        summary: isContentMode
+                          ? []
+                          : [{ type: 'summary_text', text: '' }],
+                     },
+                   }),
+                 ),
+               );
+                // summary モード時は最初の delta に先立ち part.added を送信(codex AgentReasoningSectionBreak トリガ)
+                if (!isContentMode) {
+                  controller.enqueue(
+                    encoder.encode(
+                      sseEncode('response.reasoning_summary_part.added', {
+                        type: 'response.reasoning_summary_part.added',
+                        item_id: reasoningItemId,
+                        output_index: reasoningOutputIndex,
+                        summary_index: 0,
+                      }),
+                    ),
+                  );
+                }
+             }
+             accumulatedReasoning += delta.reasoningDelta;
+              if (isContentMode) {
+                // reasoning.summary="none" 時は content delta として配信する
+                controller.enqueue(
+                  encoder.encode(
+                    sseEncode('response.reasoning_text.delta', {
+                      type: 'response.reasoning_text.delta',
+                      item_id: reasoningItemId,
+                      output_index: reasoningOutputIndex,
+                      content_index: 0,
+                      delta: delta.reasoningDelta,
+                    }),
+                  ),
+                );
+              } else {
+                controller.enqueue(
+                  encoder.encode(
+                    sseEncode('response.reasoning_summary_text.delta', {
+                      type: 'response.reasoning_summary_text.delta',
+                      item_id: reasoningItemId,
+                      output_index: reasoningOutputIndex,
+                      summary_index: 0,
+                      delta: delta.reasoningDelta,
                     }),
                   ),
                 );
               }
-              accumulatedReasoning += delta.reasoningDelta;
-              controller.enqueue(
-                encoder.encode(
-                  sseEncode('response.reasoning_summary_text.delta', {
-                    type: 'response.reasoning_summary_text.delta',
-                    item_id: reasoningItemId,
-                    output_index: reasoningOutputIndex,
-                    summary_index: 0,
-                    delta: delta.reasoningDelta,
-                  }),
-                ),
-              );
             }
 
             if (!delta.textDelta) {
@@ -316,14 +349,23 @@ export const createStreamingResponse = async (
             encoder.encode(
               sseEncode('response.output_item.done', {
                 type: 'response.output_item.done',
-                output_index: reasoningOutputIndex,
-                item: {
-                  type: 'reasoning',
-                  id: reasoningItemId,
-                  summary: [
-                    { type: 'summary_text', text: accumulatedReasoning },
-                  ],
-                },
+               output_index: reasoningOutputIndex,
+               item: isContentMode
+                  ? {
+                      type: 'reasoning',
+                      id: reasoningItemId,
+                      summary: [],
+                      content: [
+                        { type: 'reasoning_text', text: accumulatedReasoning },
+                      ],
+                    }
+                  : {
+                      type: 'reasoning',
+                      id: reasoningItemId,
+                      summary: [
+                        { type: 'summary_text', text: accumulatedReasoning },
+                      ],
+                    },
               }),
             ),
           );
