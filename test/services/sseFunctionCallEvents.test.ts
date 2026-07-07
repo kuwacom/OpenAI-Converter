@@ -1,5 +1,8 @@
 ﻿import { describe, expect, it } from 'vitest';
-import { buildStreamingEvents, sseEncode } from '@/services/proxy/sseEventBuilder';
+import {
+  buildStreamingEvents,
+  sseEncode,
+} from '@/services/proxy/sseEventBuilder';
 import type { OpenAIResponse } from '@/models/responsesModel';
 
 const eventNames = (events: ReturnType<typeof buildStreamingEvents>) =>
@@ -36,14 +39,9 @@ describe('buildStreamingEvents function_call delivery (codex CLI 公式形式)',
     const events = buildStreamingEvents(response, '', 'msg_item');
     const names = eventNames(events);
 
-    expect(names).toEqual([
-      'response.output_item.done',
-      'response.completed',
-    ]);
+    expect(names).toEqual(['response.output_item.done', 'response.completed']);
 
-    const done = events.find(
-      (e) => e.event === 'response.output_item.done',
-    );
+    const done = events.find((e) => e.event === 'response.output_item.done');
     expect(done?.data.item).toMatchObject({
       type: 'function_call',
       status: 'completed',
@@ -68,9 +66,7 @@ describe('buildStreamingEvents function_call delivery (codex CLI 公式形式)',
     ]);
 
     const events = buildStreamingEvents(response, '', 'msg_item');
-    const done = events.find(
-      (e) => e.event === 'response.output_item.done',
-    );
+    const done = events.find((e) => e.event === 'response.output_item.done');
     expect(done?.data.item).toMatchObject({
       namespace: 'mcp__codex_apps__github',
       name: 'search',
@@ -145,15 +141,11 @@ describe('buildStreamingEvents custom_tool_call delivery', () => {
 
     const events = buildStreamingEvents(response, '', 'msg_item');
 
-    expect(
-      events.some((e) =>
-        e.event.includes('custom_tool_call_input'),
-      ),
-    ).toBe(false);
-
-    const done = events.find(
-      (e) => e.event === 'response.output_item.done',
+    expect(events.some((e) => e.event.includes('custom_tool_call_input'))).toBe(
+      false,
     );
+
+    const done = events.find((e) => e.event === 'response.output_item.done');
     expect(done?.data.item).toMatchObject({
       type: 'custom_tool_call',
       name: 'apply_patch',
@@ -164,6 +156,93 @@ describe('buildStreamingEvents custom_tool_call delivery', () => {
 });
 
 describe('buildStreamingEvents non-tool items', () => {
+  it('preserves default message index for direct streamedReasoning calls', () => {
+    const response = buildResponse([
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'done' }],
+        status: 'completed',
+      },
+      {
+        id: 'fc_1',
+        type: 'function_call',
+        call_id: 'call_1',
+        name: 'finish',
+        arguments: '{}',
+        status: 'completed',
+      },
+    ]);
+
+    const events = buildStreamingEvents(response, 'done', 'msg_1', {
+      streamedReasoning: true,
+    });
+    const outputTextDone = events.find(
+      (event) => event.event === 'response.output_text.done',
+    );
+    const functionCallDone = events.find(
+      (event) =>
+        event.event === 'response.output_item.done' &&
+        (event.data.item as Record<string, unknown> | undefined)?.type ===
+          'function_call',
+    );
+
+    expect(outputTextDone?.data.output_index).toBe(0);
+    expect(functionCallDone?.data.output_index).toBe(2);
+  });
+
+  it('keeps message done events on the streamed message index after reasoning', () => {
+    const response = buildResponse([
+      {
+        id: 'rs_1',
+        type: 'reasoning',
+        summary: [{ type: 'summary_text', text: 'thinking' }],
+        status: 'completed',
+      },
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'done' }],
+        status: 'completed',
+      },
+      {
+        id: 'fc_1',
+        type: 'function_call',
+        call_id: 'call_1',
+        name: 'finish',
+        arguments: '{}',
+        status: 'completed',
+      },
+    ]);
+
+    const events = buildStreamingEvents(response, 'done', 'msg_1', {
+      streamedReasoning: true,
+      messageOutputIndex: 1,
+      nextOutputIndex: 2,
+    });
+    const messageDoneEvents = events.filter(
+      (event) =>
+        event.event === 'response.output_text.done' ||
+        event.event === 'response.content_part.done' ||
+        (event.event === 'response.output_item.done' &&
+          (event.data.item as Record<string, unknown> | undefined)?.type ===
+            'message'),
+    );
+    const functionCallDone = events.find(
+      (event) =>
+        event.event === 'response.output_item.done' &&
+        (event.data.item as Record<string, unknown> | undefined)?.type ===
+          'function_call',
+    );
+
+    expect(messageDoneEvents.map((event) => event.data.output_index)).toEqual([
+      1, 1, 1,
+    ]);
+    expect(functionCallDone?.data.output_index).toBe(2);
+  });
+
   it('emits single output_item.done for web_search_call', () => {
     const response = buildResponse([
       {
@@ -179,8 +258,8 @@ describe('buildStreamingEvents non-tool items', () => {
       events.filter((e) => e.event === 'response.output_item.done'),
     ).toHaveLength(1);
     expect(
-      events.some((e) =>
-        e.event.endsWith('.delta') && e.event.includes('arguments'),
+      events.some(
+        (e) => e.event.endsWith('.delta') && e.event.includes('arguments'),
       ),
     ).toBe(false);
   });
