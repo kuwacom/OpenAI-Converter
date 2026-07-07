@@ -72,8 +72,8 @@ export const createResponse = async (
     const abortController = new AbortController();
     const inProgressResponse = createInProgressOpenAIResponse(canonicalRequest);
 
-   responseStore.save({
-     request,
+    responseStore.save({
+      request,
       toolsRaw: request.tools ?? [],
       inputItems: currentInputItems,
       outputItems: [],
@@ -129,8 +129,8 @@ export const createResponse = async (
   );
   const finalResponse = toOpenAIResponse(canonicalRequest, canonicalResponse);
 
- responseStore.save({
-   request,
+  responseStore.save({
+    request,
     toolsRaw: request.tools ?? [],
     inputItems: currentInputItems,
     outputItems: finalResponse.output,
@@ -335,7 +335,12 @@ export const createStreamingResponse = async (
           finalResponse,
           accumulatedText,
           streamItemId,
-          { streamedReasoning: !!accumulatedReasoning && reasoningOutputIndex !== null },
+          {
+            streamedReasoning:
+              !!accumulatedReasoning && reasoningOutputIndex !== null,
+            ...(messageOutputIndex !== null ? { messageOutputIndex } : {}),
+            nextOutputIndex: outputIndexCounter.next,
+          },
         )) {
           controller.enqueue(
             encoder.encode(sseEncode(event.event, event.data)),

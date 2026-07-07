@@ -33,6 +33,8 @@ export type BuildStreamingEventsOptions = {
   // ストリーミング中に output_item.done で配信済みの reasoning を
   // response.completed ペイロードで重複配信しないために除外するフラグ
   streamedReasoning?: boolean;
+  messageOutputIndex?: number;
+  nextOutputIndex?: number;
 };
 
 export const buildStreamingEvents = (
@@ -49,6 +51,11 @@ export const buildStreamingEvents = (
   );
   const finalAssistantText =
     streamedText || getAssistantTextFromResponse(finalResponse);
+  const fallbackNextOutputIndex =
+    (finalAssistantText ? 1 : 0) + (streamedReasoning ? 1 : 0);
+  const messageOutputIndex =
+    options?.messageOutputIndex ??
+    (finalAssistantText ? (options?.nextOutputIndex ?? 0) : 0);
 
   // ストリーミング中に配信済みの message output_text.done -> content_part.done -> output_item.done で閉じる
   if (finalAssistantText) {
@@ -58,7 +65,7 @@ export const buildStreamingEvents = (
         data: {
           type: 'response.output_text.done',
           item_id: itemId,
-          output_index: 0,
+          output_index: messageOutputIndex,
           content_index: 0,
           text: finalAssistantText,
         },
@@ -68,7 +75,7 @@ export const buildStreamingEvents = (
         data: {
           type: 'response.content_part.done',
           item_id: itemId,
-          output_index: 0,
+          output_index: messageOutputIndex,
           content_index: 0,
           part: {
             type: 'output_text',
@@ -81,7 +88,7 @@ export const buildStreamingEvents = (
         event: 'response.output_item.done',
         data: {
           type: 'response.output_item.done',
-          output_index: 0,
+          output_index: messageOutputIndex,
           item:
             firstMessage && firstMessage.type === 'message'
               ? firstMessage
@@ -96,19 +103,26 @@ export const buildStreamingEvents = (
 
   // 非 message アイテム(function_call/reasoning/custom_tool_call/mcp_call/web_search_call 等)を配信。
   // codex CLI 公式形式(output_item.done 単体で item 全体配信)へ従う。delta/done 系サブイベントは不要
-  const nonMessageOutputs = finalResponse.output.filter(
-    (output) => {
-      if (finalAssistantText && output.type === 'message') return false;
-      // ストリーミング中に配信済みの reasoning は除外(重複配信防止)
-      if (streamedReasoning && (output as Record<string, unknown>).type === 'reasoning') return false;
-      return true;
-    }
-  );
+  const nonMessageOutputs = finalResponse.output.filter((output) => {
+    if (finalAssistantText && output.type === 'message') return false;
+    // ストリーミング中に配信済みの reasoning は除外(重複配信防止)
+    if (
+      streamedReasoning &&
+      (output as Record<string, unknown>).type === 'reasoning'
+    )
+      return false;
+    return true;
+  });
 
   // streamedReasoning の分も index を進める。reasoning 配信済みなら +1、
   // message text 配信済みならさらに +1 で後続 item の output_index が整合する
-  const startIndex =
-    (finalAssistantText ? 1 : 0) + (streamedReasoning ? 1 : 0);
+  const startIndex = finalAssistantText
+    ? Math.max(
+        options?.nextOutputIndex ?? fallbackNextOutputIndex,
+        messageOutputIndex + 1,
+        streamedReasoning ? 1 : 0,
+      )
+    : (options?.nextOutputIndex ?? fallbackNextOutputIndex);
 
   for (let i = 0; i < nonMessageOutputs.length; i++) {
     const item = nonMessageOutputs[i];
