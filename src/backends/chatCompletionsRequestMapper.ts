@@ -70,16 +70,19 @@ const buildSyntheticWrapperParameters = (
     return baseParams ?? {
       type: 'object',
       properties: {
-        action: {
-          type: 'object',
-          description: 'Shell action to execute (command, env, cwd, etc).',
-          properties: {
-            command: { type: 'array', items: { type: 'string' } },
-            env: { type: 'object' },
-            working_dir: { type: 'string' },
-          },
-          required: ['command'],
-        },
+       action: {
+         type: 'object',
+         description: 'Shell action to execute (command, env, cwd, etc).',
+         properties: {
+           command: { type: 'array', items: { type: 'string' } },
+           env: { type: 'object' },
+            // codex LocalShellExecAction のフィールド名に合わせる(camelCase)
+            working_directory: { type: 'string' },
+            timeout_ms: { type: 'integer', description: 'Max execution time in milliseconds.' },
+            user: { type: 'string' },
+         },
+         required: ['command'],
+       },
       },
       required: ['action'],
     };

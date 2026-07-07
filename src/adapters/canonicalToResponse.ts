@@ -125,30 +125,37 @@ const toToolCallOutputItem = (
       ? toolCall.rawArguments
       : toJsonString(toolCall.arguments ?? {}, '{}');
 
-  if (toolCall.builtinKind === 'tool_search') {
-    const parsedArgs = safeJsonParse<Record<string, unknown>>(argsStr) ?? {};
-    return {
-      id: output.id,
-      type: 'tool_search_call',
-      call_id: toolCall.callId,
-      status: output.status,
+ if (toolCall.builtinKind === 'tool_search') {
+   const parsedArgs = safeJsonParse<Record<string, unknown>>(argsStr) ?? {};
+    // codex は execution をトップレベルフィールドとして独立保持するため、
+    // arguments オブジェクトからは execution を除外する(重複回避)
+    const { execution: _exec, ...searchArguments } = parsedArgs;
+   return {
+     id: output.id,
+     type: 'tool_search_call',
+     call_id: toolCall.callId,
+     status: output.status,
       execution:
-        typeof parsedArgs.execution === 'string' ? parsedArgs.execution : 'search',
-      arguments: parsedArgs,
-    };
-  }
+        typeof _exec === 'string' ? _exec : 'search',
+      arguments: searchArguments,
+   };
+ }
 
-  if (toolCall.builtinKind === 'local_shell') {
-    const parsedArgs = safeJsonParse<Record<string, unknown>>(argsStr) ?? {};
-    return {
-      id: output.id,
-      type: 'local_shell_call',
-      call_id: toolCall.callId,
-      status: output.status,
-      action:
-        (parsedArgs.action as Record<string, unknown> | undefined) ?? null,
-    };
-  }
+ if (toolCall.builtinKind === 'local_shell') {
+   const parsedArgs = safeJsonParse<Record<string, unknown>>(argsStr) ?? {};
+    // codex LocalShellAction は #[serde(tag="type")] で type:"exec" を必須とする。
+    // 上流モデルが action.type を省略した場合は補完する
+    const rawAction =
+      (parsedArgs.action as Record<string, unknown> | undefined) ?? {};
+    const action = { type: 'exec', ...rawAction };
+   return {
+     id: output.id,
+     type: 'local_shell_call',
+     call_id: toolCall.callId,
+     status: output.status,
+      action,
+   };
+ }
 
   if (toolCall.builtinKind === 'image_generation') {
     const parsedArgs = safeJsonParse<Record<string, unknown>>(argsStr) ?? {};
